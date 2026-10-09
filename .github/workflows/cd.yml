@@ -1,7 +1,7 @@
 name: CD — Deploy to AWS EC2
 
 on:
-  # Triggers ONLY after the CI pipeline completes successfully on main
+  # Triggers ONLY after the CI pipeline completes on main
   workflow_run:
     workflows: ["CI — TaskForge AI"]
     types: [completed]
@@ -21,7 +21,8 @@ concurrency:
 
 env:
   DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-  IMAGE_TAG: ${{ github.event.inputs.image_tag || 'latest' }}
+  # Support both workflow_dispatch (inputs.image_tag) and auto-trigger (latest)
+  IMAGE_TAG: ${{ inputs.image_tag || 'latest' }}
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────────
@@ -40,13 +41,19 @@ jobs:
           CONCLUSION="${{ github.event.workflow_run.conclusion }}"
           TRIGGER="${{ github.event_name }}"
 
-          # Allow manual deploys regardless; auto-deploys only if CI passed
+          echo "Trigger  : $TRIGGER"
+          echo "Conclusion: $CONCLUSION"
+
+          # Manual deploys always proceed
           if [[ "$TRIGGER" == "workflow_dispatch" ]]; then
             echo "should_deploy=true" >> $GITHUB_OUTPUT
             echo "✅ Manual deploy requested — proceeding."
+
+          # Auto-deploy only if CI workflow succeeded
           elif [[ "$CONCLUSION" == "success" ]]; then
             echo "should_deploy=true" >> $GITHUB_OUTPUT
             echo "✅ CI passed — proceeding with deployment."
+
           else
             echo "should_deploy=false" >> $GITHUB_OUTPUT
             echo "❌ CI did not pass (conclusion: $CONCLUSION) — skipping deploy."
@@ -68,6 +75,10 @@ jobs:
     steps:
       - name: ⬇️ Checkout repository
         uses: actions/checkout@v4
+        # For workflow_run trigger, we must explicitly check out the
+        # commit that the CI ran on (not the default HEAD of the CD workflow)
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: 🔐 Configure SSH key
         run: |
@@ -76,15 +87,23 @@ jobs:
           chmod 600 ~/.ssh/ec2_key.pem
           ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
 
-      - name: 📋 Copy deploy script to EC2
+      - name: 📋 Copy deploy files to EC2
         run: |
           scp -i ~/.ssh/ec2_key.pem \
+            -o StrictHostKeyChecking=no \
             ./scripts/deploy.sh \
             ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/home/${{ secrets.EC2_USER }}/deploy.sh
 
           scp -i ~/.ssh/ec2_key.pem \
+            -o StrictHostKeyChecking=no \
             ./docker-compose.prod.yml \
             ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/home/${{ secrets.EC2_USER }}/docker-compose.yml
+
+          # Make deploy.sh executable on the EC2 instance
+          ssh -i ~/.ssh/ec2_key.pem \
+            -o StrictHostKeyChecking=no \
+            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} \
+            "chmod +x /home/${{ secrets.EC2_USER }}/deploy.sh"
 
       - name: 🚀 SSH into EC2 and deploy
         run: |
@@ -102,22 +121,33 @@ jobs:
              JWT_ACCESS_EXPIRES_IN='${{ secrets.JWT_ACCESS_EXPIRES_IN }}' \
              JWT_REFRESH_EXPIRES_IN='${{ secrets.JWT_REFRESH_EXPIRES_IN }}' \
              CLIENT_URL='${{ secrets.CLIENT_URL }}' \
-             GIT_SHA='${{ github.sha }}' \
+             GIT_SHA='${{ github.event.workflow_run.head_sha || github.sha }}' \
              bash /home/${{ secrets.EC2_USER }}/deploy.sh"
 
       - name: 🏥 Health check — verify deployment
         run: |
-          echo "⏳ Waiting 20s for containers to start..."
-          sleep 20
+          echo "⏳ Waiting 30s for containers to start..."
+          sleep 30
 
           echo "🔍 Checking health endpoint..."
-          HEALTH=$(curl --silent --fail --max-time 15 http://${{ secrets.EC2_HOST }}/api/health || echo "FAILED")
+          MAX_RETRIES=5
+          RETRY=0
+          until HEALTH=$(curl --silent --fail --max-time 15 \
+            "http://${{ secrets.EC2_HOST }}/api/health" 2>/dev/null); do
+            RETRY=$((RETRY + 1))
+            if [ "$RETRY" -ge "$MAX_RETRIES" ]; then
+              echo "❌ Health check failed after $MAX_RETRIES attempts."
+              exit 1
+            fi
+            echo "  Attempt $RETRY/$MAX_RETRIES failed — retrying in 10s..."
+            sleep 10
+          done
 
           if echo "$HEALTH" | grep -q '"status":"healthy"'; then
             echo "✅ Deployment successful! API is healthy."
             echo "$HEALTH"
           else
-            echo "❌ Health check failed. Response:"
+            echo "❌ Unexpected health response:"
             echo "$HEALTH"
             exit 1
           fi
@@ -126,7 +156,7 @@ jobs:
         if: success()
         run: |
           echo "🎉 TaskForge AI deployed successfully!"
-          echo "   Commit : ${{ github.sha }}"
+          echo "   Commit : ${{ github.event.workflow_run.head_sha || github.sha }}"
           echo "   Image  : ${{ env.DOCKERHUB_USERNAME }}/taskforge-server:${{ env.IMAGE_TAG }}"
           echo "   URL    : http://${{ secrets.EC2_HOST }}"
           echo "   Time   : $(date -u)"
@@ -134,7 +164,7 @@ jobs:
       - name: 🚨 Notify deployment failure
         if: failure()
         run: |
-          echo "❌ Deployment FAILED for commit ${{ github.sha }}"
+          echo "❌ Deployment FAILED for commit ${{ github.event.workflow_run.head_sha || github.sha }}"
           echo "Check EC2 logs: docker compose logs"
 
       - name: 🧹 Cleanup SSH key

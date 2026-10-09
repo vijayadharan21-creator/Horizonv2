@@ -139,7 +139,9 @@ jobs:
   ci-summary:
     name: ✅ CI Complete
     runs-on: ubuntu-latest
-    needs: [backend-test, frontend-build]
+    # Wait for docker-build too so the workflow conclusion only becomes
+    # 'success' AFTER images are pushed — the CD workflow_run trigger depends on this.
+    needs: [backend-test, frontend-build, docker-build]
     if: always()
 
     steps:
@@ -147,10 +149,14 @@ jobs:
         run: |
           echo "Backend Tests : ${{ needs.backend-test.result }}"
           echo "Frontend Build: ${{ needs.frontend-build.result }}"
+          echo "Docker Build  : ${{ needs.docker-build.result }}"
 
-          if [[ "${{ needs.backend-test.result }}" == "failure" || "${{ needs.frontend-build.result }}" == "failure" ]]; then
+          if [[ "${{ needs.backend-test.result }}"  == "failure" || \
+                "${{ needs.frontend-build.result }}" == "failure" || \
+                "${{ needs.docker-build.result }}"   == "failure" ]]; then
             echo "❌ CI FAILED — Check the failing job above."
             exit 1
           fi
 
           echo "✅ All CI checks passed!"
+
