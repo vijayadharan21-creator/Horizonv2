@@ -1,3 +1,10 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# docker-compose.yml — TaskForge AI
+#
+# Used for BOTH local dev and EC2 production (builds from source).
+# On EC2: create a .env file in this directory with production values.
+# ─────────────────────────────────────────────────────────────────────────────
+
 services:
   # ─── Node.js Express Backend ───────────────────────────────────────────────
   server:
@@ -8,15 +15,11 @@ services:
     restart: unless-stopped
     ports:
       - "5000:5000"
+    env_file:
+      - .env              # reads MONGO_URI, JWT secrets etc from .env
     environment:
       - NODE_ENV=production
       - PORT=5000
-      - MONGO_URI=${MONGO_URI}
-      - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET}
-      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
-      - JWT_ACCESS_EXPIRES_IN=${JWT_ACCESS_EXPIRES_IN}
-      - JWT_REFRESH_EXPIRES_IN=${JWT_REFRESH_EXPIRES_IN}
-      - CLIENT_URL=${CLIENT_URL}
     networks:
       - taskforge_network
     healthcheck:
@@ -24,7 +27,12 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 15s
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ─── React + Vite Client via Nginx ─────────────────────────────────────────
   client:
@@ -40,6 +48,11 @@ services:
         condition: service_healthy
     networks:
       - taskforge_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 # ─── Shared Network ────────────────────────────────────────────────────────
 networks:

@@ -1,28 +1,17 @@
-name: CD — Manual Re-Deploy to AWS EC2
+name: CD — Manual Re-Deploy to EC2
 
 # ─────────────────────────────────────────────────────────────────────────────
-# This workflow handles MANUAL re-deploys only.
-# Automatic deploys on push to main are handled by ci.yml (deploy job).
-#
-# Use this when you want to roll back to a previous image tag, or
-# re-deploy the current :latest without a new code push.
+# Manual re-deploy: SSH → cd to project folder → git pull → docker compose up
+# Use this to re-deploy without making a code change (e.g. after fixing .env).
 # ─────────────────────────────────────────────────────────────────────────────
 on:
   workflow_dispatch:
-    inputs:
-      image_tag:
-        description: 'Docker image tag to deploy (e.g. latest, or a git SHA)'
-        required: false
-        default: 'latest'
 
 concurrency:
   group: cd-production
-  cancel-in-progress: false  # Never cancel an active deployment
+  cancel-in-progress: false
 
 jobs:
-  # ─────────────────────────────────────────────────────────────────────────────
-  # Manual Deploy to EC2
-  # ─────────────────────────────────────────────────────────────────────────────
   deploy:
     name: 🚀 Manual Deploy to EC2
     runs-on: ubuntu-latest
@@ -32,9 +21,6 @@ jobs:
       url: http://${{ secrets.EC2_HOST }}
 
     steps:
-      - name: ⬇️ Checkout repository
-        uses: actions/checkout@v4
-
       - name: 🔐 Configure SSH key
         run: |
           mkdir -p ~/.ssh
@@ -42,75 +28,49 @@ jobs:
           chmod 600 ~/.ssh/ec2_key.pem
           ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
 
-      - name: 📋 Copy deploy files to EC2
-        run: |
-          scp -i ~/.ssh/ec2_key.pem \
-            -o StrictHostKeyChecking=no \
-            ./scripts/deploy.sh \
-            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/home/${{ secrets.EC2_USER }}/deploy.sh
-
-          scp -i ~/.ssh/ec2_key.pem \
-            -o StrictHostKeyChecking=no \
-            ./docker-compose.prod.yml \
-            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/home/${{ secrets.EC2_USER }}/docker-compose.yml
-
-          ssh -i ~/.ssh/ec2_key.pem \
-            -o StrictHostKeyChecking=no \
-            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} \
-            "chmod +x /home/${{ secrets.EC2_USER }}/deploy.sh"
-
-      - name: 🚀 SSH into EC2 and run deploy script
+      - name: 🚀 SSH → git pull → docker compose up
         run: |
           ssh -i ~/.ssh/ec2_key.pem \
             -o StrictHostKeyChecking=no \
-            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} \
-            "DOCKERHUB_USERNAME='${{ secrets.DOCKERHUB_USERNAME }}' \
-             DOCKERHUB_TOKEN='${{ secrets.DOCKERHUB_TOKEN }}' \
-             IMAGE_TAG='${{ inputs.image_tag }}' \
-             MONGO_URI='${{ secrets.MONGO_URI }}' \
-             JWT_ACCESS_SECRET='${{ secrets.JWT_ACCESS_SECRET }}' \
-             JWT_REFRESH_SECRET='${{ secrets.JWT_REFRESH_SECRET }}' \
-             JWT_ACCESS_EXPIRES_IN='${{ secrets.JWT_ACCESS_EXPIRES_IN }}' \
-             JWT_REFRESH_EXPIRES_IN='${{ secrets.JWT_REFRESH_EXPIRES_IN }}' \
-             CLIENT_URL='${{ secrets.CLIENT_URL }}' \
-             GIT_SHA='${{ github.sha }}' \
-             bash /home/${{ secrets.EC2_USER }}/deploy.sh"
+            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
 
-      - name: 🏥 Health check — verify deployment
+            set -e
+
+            echo "📁 Moving to project directory..."
+            cd /home/ubuntu/Horizonv2
+
+            echo "⬇️  Pulling latest code from main..."
+            git pull origin main
+
+            echo "🛑 Stopping existing containers..."
+            sudo docker compose down --timeout 30 || true
+
+            echo "🐳 Building and starting containers..."
+            sudo docker compose up -d --build
+
+            echo "✅ Done."
+            sudo docker compose ps
+          EOF
+
+      - name: 🏥 Health check
         run: |
-          echo "⏳ Waiting 30s for containers to initialise..."
-          sleep 30
+          echo "⏳ Waiting 40s..."
+          sleep 40
 
-          echo "🔍 Polling health endpoint (5 attempts, 10s apart)..."
-          MAX_RETRIES=5
-          RETRY=0
-          until HEALTH=$(curl --silent --fail --max-time 15 \
-            "http://${{ secrets.EC2_HOST }}/api/health" 2>/dev/null); do
-            RETRY=$((RETRY + 1))
-            if [ "$RETRY" -ge "$MAX_RETRIES" ]; then
-              echo "❌ Health check failed after $MAX_RETRIES attempts."
-              exit 1
+          for i in 1 2 3 4 5; do
+            HEALTH=$(curl --silent --max-time 10 \
+              "http://${{ secrets.EC2_HOST }}/api/health" 2>/dev/null || echo "FAILED")
+
+            if echo "$HEALTH" | grep -q '"status":"healthy"'; then
+              echo "✅ Healthy — $HEALTH"
+              exit 0
             fi
-            echo "  Attempt $RETRY/$MAX_RETRIES failed — retrying in 10s..."
+            echo "  Attempt $i/5 retrying..."
             sleep 10
           done
 
-          if echo "$HEALTH" | grep -q '"status":"healthy"'; then
-            echo "✅ Manual re-deploy successful! API is healthy."
-            echo "$HEALTH"
-          else
-            echo "❌ Unexpected health response:"
-            echo "$HEALTH"
-            exit 1
-          fi
-
-      - name: 📣 Deployment summary
-        if: always()
-        run: |
-          echo "Tag    : ${{ inputs.image_tag }}"
-          echo "Commit : ${{ github.sha }}"
-          echo "URL    : http://${{ secrets.EC2_HOST }}"
-          echo "Time   : $(date -u)"
+          echo "❌ Health check failed."
+          exit 1
 
       - name: 🧹 Cleanup SSH key
         if: always()

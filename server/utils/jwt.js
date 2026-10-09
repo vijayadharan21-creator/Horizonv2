@@ -64,22 +64,25 @@ export const verifyRefreshToken = (token) => {
 };
 
 /**
- * Cookie options for both tokens
+ * Cookie options for both tokens.
+ *
+ * NOTE: secure:true + sameSite:'none' REQUIRES HTTPS.
+ * On plain HTTP (EC2 without SSL), browsers silently drop these cookies
+ * causing all protected routes to fail with 401/500.
+ * Use sameSite:'lax' + secure:false when running without HTTPS.
  */
-const isProduction = process.env.NODE_ENV === 'production';
-
 export const accessTokenCookieOptions = {
   httpOnly: true,
-  secure: isProduction,
-  sameSite: isProduction ? 'none' : 'lax',
+  secure: false,       // Set to true only when HTTPS is configured
+  sameSite: 'lax',     // 'lax' works on HTTP; use 'none' only with HTTPS
   maxAge: 15 * 60 * 1000, // 15 minutes
   path: '/',
 };
 
 export const refreshTokenCookieOptions = {
   httpOnly: true,
-  secure: isProduction,
-  sameSite: isProduction ? 'none' : 'lax',
+  secure: false,       // Set to true only when HTTPS is configured
+  sameSite: 'lax',
   maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   path: '/',
 };
