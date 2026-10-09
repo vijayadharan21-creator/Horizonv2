@@ -1,17 +1,17 @@
-name: CD — Deploy to AWS EC2
+name: CD — Manual Re-Deploy to AWS EC2
 
+# ─────────────────────────────────────────────────────────────────────────────
+# This workflow handles MANUAL re-deploys only.
+# Automatic deploys on push to main are handled by ci.yml (deploy job).
+#
+# Use this when you want to roll back to a previous image tag, or
+# re-deploy the current :latest without a new code push.
+# ─────────────────────────────────────────────────────────────────────────────
 on:
-  # Triggers ONLY after the CI pipeline completes on main
-  workflow_run:
-    workflows: ["CI — TaskForge AI"]
-    types: [completed]
-    branches: [main]
-
-  # Allow manual deploy from GitHub Actions UI
   workflow_dispatch:
     inputs:
       image_tag:
-        description: 'Docker image tag to deploy (default: latest)'
+        description: 'Docker image tag to deploy (e.g. latest, or a git SHA)'
         required: false
         default: 'latest'
 
@@ -19,54 +19,13 @@ concurrency:
   group: cd-production
   cancel-in-progress: false  # Never cancel an active deployment
 
-env:
-  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-  # Support both workflow_dispatch (inputs.image_tag) and auto-trigger (latest)
-  IMAGE_TAG: ${{ inputs.image_tag || 'latest' }}
-
 jobs:
   # ─────────────────────────────────────────────────────────────────────────────
-  # Gate: Only deploy if CI passed (for workflow_run trigger)
-  # ─────────────────────────────────────────────────────────────────────────────
-  check-ci:
-    name: 🔍 Verify CI Passed
-    runs-on: ubuntu-latest
-    outputs:
-      should_deploy: ${{ steps.gate.outputs.should_deploy }}
-
-    steps:
-      - name: 🔍 Check CI workflow conclusion
-        id: gate
-        run: |
-          CONCLUSION="${{ github.event.workflow_run.conclusion }}"
-          TRIGGER="${{ github.event_name }}"
-
-          echo "Trigger  : $TRIGGER"
-          echo "Conclusion: $CONCLUSION"
-
-          # Manual deploys always proceed
-          if [[ "$TRIGGER" == "workflow_dispatch" ]]; then
-            echo "should_deploy=true" >> $GITHUB_OUTPUT
-            echo "✅ Manual deploy requested — proceeding."
-
-          # Auto-deploy only if CI workflow succeeded
-          elif [[ "$CONCLUSION" == "success" ]]; then
-            echo "should_deploy=true" >> $GITHUB_OUTPUT
-            echo "✅ CI passed — proceeding with deployment."
-
-          else
-            echo "should_deploy=false" >> $GITHUB_OUTPUT
-            echo "❌ CI did not pass (conclusion: $CONCLUSION) — skipping deploy."
-          fi
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # JOB 1 — Deploy to EC2 via SSH
+  # Manual Deploy to EC2
   # ─────────────────────────────────────────────────────────────────────────────
   deploy:
-    name: 🚀 Deploy to EC2
+    name: 🚀 Manual Deploy to EC2
     runs-on: ubuntu-latest
-    needs: check-ci
-    if: needs.check-ci.outputs.should_deploy == 'true'
 
     environment:
       name: production
@@ -75,10 +34,6 @@ jobs:
     steps:
       - name: ⬇️ Checkout repository
         uses: actions/checkout@v4
-        # For workflow_run trigger, we must explicitly check out the
-        # commit that the CI ran on (not the default HEAD of the CD workflow)
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: 🔐 Configure SSH key
         run: |
@@ -99,37 +54,34 @@ jobs:
             ./docker-compose.prod.yml \
             ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/home/${{ secrets.EC2_USER }}/docker-compose.yml
 
-          # Make deploy.sh executable on the EC2 instance
           ssh -i ~/.ssh/ec2_key.pem \
             -o StrictHostKeyChecking=no \
             ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} \
             "chmod +x /home/${{ secrets.EC2_USER }}/deploy.sh"
 
-      - name: 🚀 SSH into EC2 and deploy
+      - name: 🚀 SSH into EC2 and run deploy script
         run: |
-          # Env vars must be explicitly forwarded into the remote SSH session.
-          # GitHub Actions `env:` block only sets vars on the local runner.
           ssh -i ~/.ssh/ec2_key.pem \
             -o StrictHostKeyChecking=no \
             ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} \
             "DOCKERHUB_USERNAME='${{ secrets.DOCKERHUB_USERNAME }}' \
              DOCKERHUB_TOKEN='${{ secrets.DOCKERHUB_TOKEN }}' \
-             IMAGE_TAG='${{ env.IMAGE_TAG }}' \
+             IMAGE_TAG='${{ inputs.image_tag }}' \
              MONGO_URI='${{ secrets.MONGO_URI }}' \
              JWT_ACCESS_SECRET='${{ secrets.JWT_ACCESS_SECRET }}' \
              JWT_REFRESH_SECRET='${{ secrets.JWT_REFRESH_SECRET }}' \
              JWT_ACCESS_EXPIRES_IN='${{ secrets.JWT_ACCESS_EXPIRES_IN }}' \
              JWT_REFRESH_EXPIRES_IN='${{ secrets.JWT_REFRESH_EXPIRES_IN }}' \
              CLIENT_URL='${{ secrets.CLIENT_URL }}' \
-             GIT_SHA='${{ github.event.workflow_run.head_sha || github.sha }}' \
+             GIT_SHA='${{ github.sha }}' \
              bash /home/${{ secrets.EC2_USER }}/deploy.sh"
 
       - name: 🏥 Health check — verify deployment
         run: |
-          echo "⏳ Waiting 30s for containers to start..."
+          echo "⏳ Waiting 30s for containers to initialise..."
           sleep 30
 
-          echo "🔍 Checking health endpoint..."
+          echo "🔍 Polling health endpoint (5 attempts, 10s apart)..."
           MAX_RETRIES=5
           RETRY=0
           until HEALTH=$(curl --silent --fail --max-time 15 \
@@ -144,7 +96,7 @@ jobs:
           done
 
           if echo "$HEALTH" | grep -q '"status":"healthy"'; then
-            echo "✅ Deployment successful! API is healthy."
+            echo "✅ Manual re-deploy successful! API is healthy."
             echo "$HEALTH"
           else
             echo "❌ Unexpected health response:"
@@ -152,20 +104,13 @@ jobs:
             exit 1
           fi
 
-      - name: 📣 Notify deployment success
-        if: success()
+      - name: 📣 Deployment summary
+        if: always()
         run: |
-          echo "🎉 TaskForge AI deployed successfully!"
-          echo "   Commit : ${{ github.event.workflow_run.head_sha || github.sha }}"
-          echo "   Image  : ${{ env.DOCKERHUB_USERNAME }}/taskforge-server:${{ env.IMAGE_TAG }}"
-          echo "   URL    : http://${{ secrets.EC2_HOST }}"
-          echo "   Time   : $(date -u)"
-
-      - name: 🚨 Notify deployment failure
-        if: failure()
-        run: |
-          echo "❌ Deployment FAILED for commit ${{ github.event.workflow_run.head_sha || github.sha }}"
-          echo "Check EC2 logs: docker compose logs"
+          echo "Tag    : ${{ inputs.image_tag }}"
+          echo "Commit : ${{ github.sha }}"
+          echo "URL    : http://${{ secrets.EC2_HOST }}"
+          echo "Time   : $(date -u)"
 
       - name: 🧹 Cleanup SSH key
         if: always()
