@@ -71,7 +71,7 @@ app.use((err, req, res, next) => {
 });
 
 // Initialize server and database
-const startServer = async () => {
+export const startServer = async () => {
   try {
     await connectDB();
     await seedDefaultUsers();
@@ -92,4 +92,9 @@ const startServer = async () => {
   }
 };
 
-startServer();
+// Auto-start when not running in unit test mode
+if (process.env.NODE_ENV !== 'test') {
+  startServer();
+}
+
+export default app;

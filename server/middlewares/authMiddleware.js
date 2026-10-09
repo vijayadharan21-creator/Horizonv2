@@ -11,12 +11,12 @@ export const cookieParserMiddleware = (req, res, next) => {
     cookieHeader.split(';').forEach((rawCookie) => {
       const parts = rawCookie.trim().split('=');
       if (parts.length >= 2) {
-        const key = parts[0].trim();
         const value = parts.slice(1).join('=').trim();
         try {
+          const key = decodeURIComponent(parts[0].trim());
           req.cookies[key] = decodeURIComponent(value);
         } catch {
-          req.cookies[key] = value;
+          req.cookies[parts[0].trim()] = value;
         }
       }
     });
