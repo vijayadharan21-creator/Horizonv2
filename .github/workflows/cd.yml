@@ -16,9 +16,7 @@ jobs:
     name: 🚀 Manual Deploy to EC2
     runs-on: ubuntu-latest
 
-    environment:
-      name: production
-      url: http://${{ secrets.EC2_HOST }}
+    environment: production
 
     steps:
       - name: 🔐 Configure SSH key
