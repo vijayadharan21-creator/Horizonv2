@@ -25,6 +25,7 @@ const testFiles = [
   path.join(__dirname, 'ai.test.js'),
   path.join(__dirname, 'scheduleValidator.test.js'),
   path.join(__dirname, 'recovery.test.js'),
+  path.join(__dirname, 'edurEngine.test.js'),
 ];
 
 console.log('🧪 TaskForge Backend — Running Unit Tests...\n');

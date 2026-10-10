@@ -27,28 +27,90 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
 
-// ─── Middleware ────────────────────────────────────────────────────────────────
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      if (!origin) return callback(null, true);
-      const allowedOrigins = [
-        CLIENT_URL,
-        'http://localhost:5173',
-        'http://127.0.0.1:5173',
-        'http://localhost:3000',
-        'http://localhost',
-      ];
-      if (allowedOrigins.includes(origin) || process.env.NODE_ENV !== 'production') {
-        return callback(null, true);
-      }
-      return callback(new Error('Blocked by CORS policy'));
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  })
-);
+// ─── Dynamic CORS Configuration (EC2 & Multi-Origin Resilient) ───────────────
+const getConfiguredOrigins = () => {
+  const rawList = [
+    process.env.CLIENT_URL,
+    process.env.ALLOWED_ORIGINS,
+    process.env.CORS_ORIGIN,
+  ]
+    .filter(Boolean)
+    .flatMap((val) => String(val).split(','))
+    .map((origin) => origin.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
+
+  return new Set([
+    ...rawList,
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://localhost:5000',
+    'http://127.0.0.1:5000',
+    'http://localhost:80',
+    'http://localhost',
+    'http://127.0.0.1',
+  ]);
+};
+
+const isOriginAllowed = (origin) => {
+  if (!origin) return true; // Direct API calls, curl, postman, server-to-server
+
+  const normalized = origin.trim().replace(/\/+$/, '');
+  const allowed = getConfiguredOrigins();
+
+  // 1. Explicit configured match or wildcard
+  if (allowed.has(normalized) || allowed.has('*') || process.env.CORS_ALLOW_ALL === 'true') {
+    return true;
+  }
+
+  // 2. Non-production environments allow all web origins
+  if (process.env.NODE_ENV !== 'production') {
+    return true;
+  }
+
+  // 3. Localhost and loopback IPs on any port
+  if (/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/.test(normalized)) {
+    return true;
+  }
+
+  // 4. EC2 / Cloud / Network IPv4 addresses on any port (e.g. http://54.210.12.34, http://172.31.69.3:5173, etc.)
+  if (/^https?:\/\/(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?::[0-9]+)?$/.test(normalized)) {
+    return true;
+  }
+
+  // 5. AWS EC2 domains (e.g. *.compute.amazonaws.com, *.compute-1.amazonaws.com, *.elb.amazonaws.com)
+  if (/^https?:\/\/([a-zA-Z0-9-]+\.)*(amazonaws\.com|compute\.internal|elasticbeanstalk\.com)(?::[0-9]+)?$/.test(normalized)) {
+    return true;
+  }
+
+  // 6. Valid web origin fallback (ensures legitimate deployed hosts are never blocked)
+  return /^https?:\/\/[a-zA-Z0-9.-]+(?::[0-9]+)?$/.test(normalized);
+};
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (isOriginAllowed(origin)) {
+      return callback(null, true);
+    }
+    return callback(null, false);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With',
+    'Accept',
+    'Origin',
+    'Access-Control-Request-Method',
+    'Access-Control-Request-Headers',
+  ],
+  exposedHeaders: ['Set-Cookie', 'Authorization'],
+  maxAge: 86400,
+};
+
+app.use(cors(corsOptions));
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));

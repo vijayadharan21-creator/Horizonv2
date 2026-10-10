@@ -8,6 +8,9 @@ import {
   getRecoveryRecommendations,
   applyRecoveryPlan,
   clearUnavailability,
+  detectUncertainties,
+  evaluatePostLeaveReturn,
+  getScheduleAuditHistory,
   getTaskAssistance,
   analyzeSrs,
 } from '../controllers/ai.controller.js';
@@ -75,6 +78,15 @@ router.post(
   authorizeRoles('project_manager', 'admin'),
   clearUnavailability
 );
+
+// ─── AI-SENSE & EDUR Audit & Uncertainty Endpoints ───────────────────────────
+router.get('/uncertainties/:projectId', detectUncertainties);
+router.post(
+  '/evaluate-return',
+  authorizeRoles('project_manager', 'admin'),
+  evaluatePostLeaveReturn
+);
+router.get('/audit-history/:projectId', getScheduleAuditHistory);
 
 // ─── Feature 5: Context-Aware Task Assistance ────────────────────────────────
 router.post('/task-assist', validateTaskAssistPayload, getTaskAssistance);

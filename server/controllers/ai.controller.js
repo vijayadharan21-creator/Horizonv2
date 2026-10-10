@@ -3,7 +3,11 @@ import taskGenerationService from '../service/ai/task-generation.service.js';
 import assignmentRecommendationService from '../service/ai/assignment-recommendation.service.js';
 import sprintInsightsService from '../service/ai/sprint-insights.service.js';
 import recoveryAiService from '../service/ai/recovery-ai.service.js';
+import edurEngine from '../service/edur/edurEngine.js';
+import uncertaintyDetector from '../service/ai-sense/uncertaintyDetector.js';
 import Project from '../models/Project.js';
+import Task from '../models/Task.js';
+import ScheduleAudit from '../models/ScheduleAudit.js';
 
 /**
  * Helper to check project membership
@@ -200,22 +204,50 @@ export const getSprintInsights = async (req, res) => {
   }
 };
 
-// ─── Feature 4: Recovery Center ──────────────────────────────────────────────
-
+// ─── Feature 4: Recovery Center & EDUR Engine ────────────────────────────────
 export const getRecoveryRecommendations = async (req, res) => {
   try {
     const { projectId, scenario } = req.body;
     await verifyProjectAccess(projectId, req.user.id, 'manager');
 
-    const result = await recoveryAiService.generateRecoveryPlan({
+    // Execute EDUR Solver Pipeline
+    const edurResult = await edurEngine.solveRecovery({
       projectId,
       scenario,
     });
 
+    const candidate = edurResult.selectedCandidate;
+    const actions = candidate ? candidate.actions : [];
+
+    const planData = {
+      scenarioAnalysis: edurResult.explanation,
+      explanation: edurResult.explanation,
+      solverStatus: edurResult.status,
+      scheduleVersion: edurResult.scheduleVersion,
+      affectedCount: edurResult.affectedCount,
+      preservedCompletedTaskCount: edurResult.preservedCompletedCount,
+      actions,
+      selectedCandidate: candidate,
+      candidates: edurResult.candidates,
+      unavailablePerson: {
+        userId: scenario?.userId,
+        userName: scenario?.workerName || 'Team member',
+        fromDate: scenario?.fromDate,
+        fromTime: scenario?.fromTime,
+        toDate: scenario?.toDate,
+        toTime: scenario?.toTime,
+        reason: scenario?.reason,
+      },
+    };
+
     return res.status(200).json({
       success: true,
-      data: result.plan,
-      meta: result.meta,
+      data: planData,
+      meta: {
+        engine: 'EDUR_OR_TOOLS_COMPLIANT',
+        solverStatus: edurResult.status,
+        timestamp: new Date().toISOString(),
+      },
     });
   } catch (error) {
     console.error('[AI Controller] getRecoveryRecommendations error:', error.message);
@@ -229,21 +261,22 @@ export const getRecoveryRecommendations = async (req, res) => {
 
 export const applyRecoveryPlan = async (req, res) => {
   try {
-    const { projectId, actions, unavailableInfo } = req.body;
+    const { projectId, actions, unavailableInfo, expectedVersion } = req.body;
     await verifyProjectAccess(projectId, req.user.id, 'manager');
 
-    const result = await recoveryAiService.applyRecoveryPlan({
+    const result = await edurEngine.applyPlan({
       projectId,
       actions,
       userId: req.user.id,
       unavailableInfo,
+      expectedVersion,
     });
 
     return res.status(200).json({
       success: true,
       data: result,
-      message: `Applied ${result.appliedCount} recovery adjustments to project tasks${
-        result.unavailablePerson ? ` and updated ${result.unavailablePerson} as Unavailable` : ''
+      message: `Applied ${result.appliedCount} recovery adjustments to project tasks (Schedule v${result.newScheduleVersion})${
+        unavailableInfo?.userName ? ` and updated ${unavailableInfo.userName} as Unavailable` : ''
       }.`,
     });
   } catch (error) {
@@ -276,6 +309,100 @@ export const clearUnavailability = async (req, res) => {
       success: false,
       message: error.message || 'Failed to clear unavailability status.',
       code: error.code || 'CLEAR_UNAVAILABILITY_FAILED',
+    });
+  }
+};
+
+// ─── AI-SENSE Uncertainty Detection & Audit Endpoints ─────────────────────────
+export const detectUncertainties = async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    await verifyProjectAccess(projectId, req.user.id);
+
+    const project = await Project.findById(projectId)
+      .populate('members')
+      .populate('manager')
+      .lean();
+
+    if (!project) {
+      return res.status(404).json({ success: false, message: 'Project not found' });
+    }
+
+    const tasks = await Task.find({ project: projectId }).lean();
+    const workers = [
+      ...(project.members || []),
+      ...(project.manager ? [project.manager] : []),
+    ];
+
+    const risks = uncertaintyDetector.detectProjectUncertainties({
+      project,
+      tasks,
+      workers,
+    });
+
+    return res.status(200).json({
+      success: true,
+      projectId,
+      scheduleVersion: project.scheduleVersion || 1,
+      riskCount: risks.length,
+      risks,
+    });
+  } catch (error) {
+    console.error('[AI Controller] detectUncertainties error:', error.message);
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || 'Failed to detect project uncertainties.',
+      code: error.code || 'UNCERTAINTY_DETECTION_FAILED',
+    });
+  }
+};
+
+export const evaluatePostLeaveReturn = async (req, res) => {
+  try {
+    const { projectId, userId, returnDate } = req.body;
+    await verifyProjectAccess(projectId, req.user.id, 'manager');
+
+    const result = await edurEngine.evaluatePostLeaveReturn({
+      projectId,
+      userId,
+      returnDate,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    console.error('[AI Controller] evaluatePostLeaveReturn error:', error.message);
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || 'Failed to evaluate post-leave return.',
+      code: error.code || 'POST_LEAVE_EVALUATION_FAILED',
+    });
+  }
+};
+
+export const getScheduleAuditHistory = async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    await verifyProjectAccess(projectId, req.user.id);
+
+    const audits = await ScheduleAudit.find({ project: projectId })
+      .sort({ scheduleVersion: -1 })
+      .limit(20)
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      projectId,
+      audits,
+    });
+  } catch (error) {
+    console.error('[AI Controller] getScheduleAuditHistory error:', error.message);
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || 'Failed to fetch schedule audit history.',
+      code: error.code || 'AUDIT_FETCH_FAILED',
     });
   }
 };

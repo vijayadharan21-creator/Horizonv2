@@ -237,4 +237,34 @@ describe('Unit Tests: API HTTP Endpoints', () => {
     assert.equal(body.success, false);
     assert.equal(body.code, 'INVALID_PROJECT_ID');
   });
+
+  it('CORS: responds with Access-Control-Allow-Origin matching EC2 public IP', async () => {
+    const ec2Origin = 'http://54.210.12.34:5173';
+    const res = await fetch(`${baseUrl}/api/health`, {
+      method: 'GET',
+      headers: {
+        Origin: ec2Origin,
+      },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('access-control-allow-origin'), ec2Origin);
+    assert.equal(res.headers.get('access-control-allow-credentials'), 'true');
+  });
+
+  it('CORS: handles OPTIONS preflight request for /api/auth/login with status 204/200', async () => {
+    const ec2Origin = 'http://172.31.69.3';
+    const res = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: ec2Origin,
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'Content-Type,Authorization',
+      },
+    });
+    assert.ok(res.status === 200 || res.status === 204, `Preflight status should be 200 or 204, got ${res.status}`);
+    assert.equal(res.headers.get('access-control-allow-origin'), ec2Origin);
+    assert.equal(res.headers.get('access-control-allow-credentials'), 'true');
+    assert.match(res.headers.get('access-control-allow-methods') || '', /POST/);
+  });
 });
+

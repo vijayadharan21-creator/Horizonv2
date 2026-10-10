@@ -83,6 +83,15 @@ const taskSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    scheduleVersion: {
+      type: Number,
+      default: 1,
+    },
+    riskStatus: {
+      type: String,
+      enum: ['NORMAL', 'AT_RISK', 'DELAYED', 'BLOCKED', 'REASSIGNED'],
+      default: 'NORMAL',
+    },
     lastUpdated: {
       type: String,
       default: 'Just now',

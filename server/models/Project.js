@@ -46,6 +46,10 @@ const projectSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    scheduleVersion: {
+      type: Number,
+      default: 1,
+    },
     unavailabilities: [
       {
         userId: {

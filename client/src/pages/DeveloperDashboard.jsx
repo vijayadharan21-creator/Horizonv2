@@ -370,7 +370,11 @@ export const DeveloperDashboard = () => {
               tasks={tasks}
               currentProject={currentProject}
               isPM={isPM}
-              onTriggerReplan={() => loadTasks()}
+              onTriggerReplan={async () => {
+                await loadTasks();
+                await loadProjects();
+                await loadTeamMembers();
+              }}
             />
           )}
 

@@ -207,11 +207,12 @@ export const aiApi = {
   },
 
   /** Feature 4: Apply approved recovery plan modifications to MongoDB (PM only) */
-  applyRecoveryPlan: async (projectId, actions, unavailableInfo = null) => {
+  applyRecoveryPlan: async (projectId, actions, unavailableInfo = null, expectedVersion = null) => {
     const response = await api.post('/api/ai/apply-recovery-plan', {
       projectId,
       actions,
       unavailableInfo,
+      expectedVersion,
     });
     return response.data;
   },
@@ -222,6 +223,28 @@ export const aiApi = {
       projectId,
       userId,
     });
+    return response.data;
+  },
+
+  /** AI-SENSE: Live uncertainty detection across 7 taxonomy categories */
+  detectUncertainties: async (projectId) => {
+    const response = await api.get(`/api/ai/uncertainties/${projectId}`);
+    return response.data;
+  },
+
+  /** EDUR: Post-leave return evaluation and beneficial transfer-back */
+  evaluatePostLeaveReturn: async (projectId, userId, returnDate) => {
+    const response = await api.post('/api/ai/evaluate-return', {
+      projectId,
+      userId,
+      returnDate,
+    });
+    return response.data;
+  },
+
+  /** EDUR: Audit trail history of all schedule versions and changes */
+  getScheduleAuditHistory: async (projectId) => {
+    const response = await api.get(`/api/ai/audit-history/${projectId}`);
     return response.data;
   },
 

@@ -140,8 +140,9 @@ export function validateScheduleCandidate({
 
   // ── V02: Every assignee that has an ID must resolve to a known member
   for (const task of proposedTasks) {
-    if (task.assigneeId && task.assigneeId !== 'null') {
-      const idStr = String(task.assigneeId);
+    const rawAssignee = task.assigneeId || task.assignee;
+    if (rawAssignee && rawAssignee !== 'null') {
+      const idStr = String(rawAssignee._id || rawAssignee);
       if (!memberIds.has(idStr)) {
         errors.push({
           code: VALIDATION_ERRORS.V02_UNKNOWN_WORKER,
@@ -209,8 +210,9 @@ export function validateScheduleCandidate({
   //         Group all proposed tasks by assigneeId, check date overlap
   const assigneeTaskGroups = new Map();
   for (const task of proposedTasks) {
-    if (!task.assigneeId || task.status === 'Completed') continue;
-    const key = String(task.assigneeId);
+    const rawAssignee = task.assigneeId || task.assignee;
+    if (!rawAssignee || task.status === 'Completed') continue;
+    const key = String(rawAssignee._id || rawAssignee);
     if (!assigneeTaskGroups.has(key)) assigneeTaskGroups.set(key, []);
     assigneeTaskGroups.get(key).push(task);
   }
@@ -236,9 +238,11 @@ export function validateScheduleCandidate({
 
   // ── V07: No assignment during worker unavailability
   for (const task of proposedTasks) {
-    if (!task.assigneeId || task.status === 'Completed') continue;
+    const rawAssignee = task.assigneeId || task.assignee;
+    if (!rawAssignee || task.status === 'Completed') continue;
+    const assignedWorkerId = String(rawAssignee._id || rawAssignee);
     for (const ua of unavailabilities) {
-      if (String(ua.userId) !== String(task.assigneeId)) continue;
+      if (String(ua.userId) !== assignedWorkerId) continue;
       const uaStart = parseDate(ua.fromDate);
       const uaEnd = parseDate(ua.toDate);
       const taskStart = parseDate(task.startDate);
@@ -246,9 +250,9 @@ export function validateScheduleCandidate({
       if (intervalsOverlap(uaStart, uaEnd, taskStart, taskEnd)) {
         errors.push({
           code: VALIDATION_ERRORS.V07_WORKER_UNAVAILABLE,
-          message: `Task "${task.taskId}" is assigned to worker "${task.assigneeId}" who is marked unavailable from ${ua.fromDate} to ${ua.toDate}.`,
+          message: `Task "${task.taskId}" is assigned to worker "${assignedWorkerId}" who is marked unavailable from ${ua.fromDate} to ${ua.toDate}.`,
           taskId: task.taskId,
-          workerId: String(task.assigneeId),
+          workerId: assignedWorkerId,
           unavailabilityFrom: ua.fromDate,
           unavailabilityTo: ua.toDate,
         });
