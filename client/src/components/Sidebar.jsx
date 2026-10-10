@@ -104,6 +104,7 @@ export const Sidebar = ({
       id: 'recovery-center',
       label: 'Unavailable & Recovery',
       badge: null,
+      pmOnly: true,
       icon: (
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -114,6 +115,7 @@ export const Sidebar = ({
       id: 'profile',
       label: 'My Profile',
       badge: null,
+      pmOnly: false,
       icon: (
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.121 17.804A13.937 13.937 0 0112 16c2.5 0 4.847.655 6.879 1.804M15 10a3 3 0 11-6 0 3 3 0 016 0zm6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -126,6 +128,12 @@ export const Sidebar = ({
   const visibleWorkspaceNavItems = allWorkspaceNavItems.filter((item) => {
     if (item.pmOnly && !isPM) return false;     // hide PM-only items from devs
     if (item.devOnly && isPM) return false;      // hide dev-only items from PM
+    return true;
+  });
+
+  // Filter account/tool items based on role
+  const visibleToolsNavItems = toolsNavItems.filter((item) => {
+    if (item.pmOnly && !isPM) return false;     // hide PM-only items from devs
     return true;
   });
 
@@ -198,7 +206,7 @@ export const Sidebar = ({
             ACCOUNT
           </div>
           <nav className="space-y-1">
-            {toolsNavItems.map((item) => {
+            {visibleToolsNavItems.map((item) => {
               const isActive = currentTab === item.id;
               return (
                 <button

@@ -41,7 +41,9 @@ export const DeveloperDashboard = () => {
 
   // ── Security guard: developers cannot access PM-only views ────────────────
   useEffect(() => {
-    if (!isPM && currentTab === 'task-allocation') setCurrentTab('my-tasks');
+    if (!isPM && (currentTab === 'task-allocation' || currentTab === 'recovery-center' || currentTab === 'team')) {
+      setCurrentTab('my-tasks');
+    }
   }, [isPM, currentTab]);
 
   // ── Load projects on mount ────────────────────────────────────────────────
@@ -365,7 +367,7 @@ export const DeveloperDashboard = () => {
             <AnalyticsView tasks={tasks} currentProject={currentProject} />
           )}
 
-          {currentTab === 'recovery-center' && (
+          {currentTab === 'recovery-center' && isPM && (
             <RecoveryCenterView
               tasks={tasks}
               currentProject={currentProject}

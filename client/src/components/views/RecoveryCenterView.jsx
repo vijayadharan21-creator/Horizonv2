@@ -348,6 +348,18 @@ export const RecoveryCenterView = ({
     (m) => String(m.id || m._id) === String(selectedMemberId)
   );
 
+  if (!isPM) {
+    return (
+      <div className="p-8 text-center text-slate-500 text-sm max-w-lg mx-auto bg-white rounded-2xl border border-slate-200 mt-12 shadow-xs">
+        <div className="text-3xl mb-2">🔒</div>
+        <h3 className="font-bold text-slate-800 text-base mb-1">Access Restricted</h3>
+        <p className="text-xs text-slate-500">
+          The Uncertainty & Schedule Recovery Center is reserved for Project Managers to simulate and approve project-wide schedule replanning.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="p-6 sm:p-8 space-y-6 max-w-7xl mx-auto animate-in fade-in duration-150">
       {/* Header */}
