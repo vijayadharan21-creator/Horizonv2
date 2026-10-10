@@ -125,14 +125,15 @@ export class EdurEngine {
   /**
    * Generate multiple candidate schedules for the affected closure
    */
-  generateCandidates(snapshot, affectedClosure, event) {
+  generateCandidates(snapshot, affectedClosure, event = {}) {
+    const scenario = event || {};
     const { members, unavailabilities, project, tasks } = snapshot;
     const { affectedTasks } = affectedClosure;
     const todayStr = new Date().toISOString().split('T')[0];
 
-    const absentUserId = event.workerId || event.userId ? String(event.workerId || event.userId) : null;
-    const absentFrom = event.fromDate || todayStr;
-    const absentTo = event.toDate || absentFrom;
+    const absentUserId = scenario.workerId || scenario.userId ? String(scenario.workerId || scenario.userId) : null;
+    const absentFrom = scenario.fromDate || todayStr;
+    const absentTo = scenario.toDate || absentFrom;
 
     // Available replacement developers (excluding the absent person and anyone marked unavailable)
     const availableMembers = members.filter((m) => {
@@ -180,12 +181,21 @@ export class EdurEngine {
         const wid = String(bestWorker._id || bestWorker.id);
         workerWorkload.set(wid, (workerWorkload.get(wid) || 0) + (task.effortHours || 8));
 
+        const matchedSkills = (bestWorker.subSkills || bestWorker.skills || []).filter((s) =>
+          (task.subSkills || task.requiredSkills || task.tags || []).some(
+            (ts) => ts.toLowerCase() === s.toLowerCase()
+          )
+        );
+
         cand1Actions.push({
           taskId: task.taskId,
+          taskTitle: task.title || `Task ${task.taskId}`,
           actionType: 'reassign',
-          previousAssignee: task.assigneeName,
+          previousAssignee: task.assigneeName || 'Unassigned',
+          unavailablePersonName: scenario.workerName || task.assigneeName || 'Original Assignee',
           recommendedAssigneeId: wid,
           recommendedAssigneeName: bestWorker.name,
+          matchedSubSkills: matchedSkills.length > 0 ? matchedSkills : (bestWorker.subSkills || []).slice(0, 2),
           previousDueDate: task.dueDate,
           proposedDueDate: task.dueDate, // Kept stable
           reason: `Reassigned to ${bestWorker.name} based on verified sub-skill match and available sprint capacity.`,
@@ -193,7 +203,10 @@ export class EdurEngine {
       } else {
         cand1Actions.push({
           taskId: task.taskId,
+          taskTitle: task.title || `Task ${task.taskId}`,
           actionType: 'adjust_priority',
+          previousAssignee: task.assigneeName || 'Unassigned',
+          unavailablePersonName: scenario.workerName || task.assigneeName || 'Original Assignee',
           priorityAdjustment: 'Critical',
           reason: 'No eligible peer available. Marked for PM intervention.',
         });
@@ -202,7 +215,9 @@ export class EdurEngine {
 
     candidates.push({
       id: 'candidate-skill-optimal',
+      candidateId: 'candidate-skill-optimal',
       name: 'Skill-Optimal Peer Reassignment',
+      strategyName: 'Skill-Optimal Peer Reassignment',
       strategy: 'REASSIGN_MATCHED_SKILLS',
       actions: cand1Actions,
     });
@@ -230,8 +245,10 @@ export class EdurEngine {
 
       cand2Actions.push({
         taskId: task.taskId,
+        taskTitle: task.title || `Task ${task.taskId}`,
         actionType: 'reschedule',
         previousAssignee: task.assigneeName,
+        unavailablePersonName: scenario.workerName || task.assigneeName || 'Original Assignee',
         recommendedAssigneeName: task.assigneeName, // Preserves same person
         recommendedAssigneeId: task.assignee ? String(task.assignee) : null,
         previousDueDate: task.dueDate,
@@ -242,7 +259,9 @@ export class EdurEngine {
 
     candidates.push({
       id: 'candidate-timeline-shift',
+      candidateId: 'candidate-timeline-shift',
       name: 'Timeline Shift & Date Cascade',
+      strategyName: 'Timeline Shift & Date Cascade',
       strategy: 'PRESERVE_ASSIGNEE_SHIFT_DATES',
       actions: cand2Actions,
     });
@@ -257,8 +276,10 @@ export class EdurEngine {
         const bestPeer = availableMembers[0] || null;
         cand3Actions.push({
           taskId: task.taskId,
+          taskTitle: task.title || `Task ${task.taskId}`,
           actionType: 'reassign',
           previousAssignee: task.assigneeName,
+          unavailablePersonName: scenario.workerName || task.assigneeName || 'Original Assignee',
           recommendedAssigneeId: bestPeer ? String(bestPeer._id || bestPeer.id) : null,
           recommendedAssigneeName: bestPeer?.name || 'Unassigned',
           previousDueDate: task.dueDate,
@@ -270,8 +291,10 @@ export class EdurEngine {
         d.setDate(d.getDate() + 3);
         cand3Actions.push({
           taskId: task.taskId,
+          taskTitle: task.title || `Task ${task.taskId}`,
           actionType: 'reschedule',
           previousAssignee: task.assigneeName,
+          unavailablePersonName: scenario.workerName || task.assigneeName || 'Original Assignee',
           recommendedAssigneeName: task.assigneeName,
           recommendedAssigneeId: task.assignee ? String(task.assignee) : null,
           previousDueDate: task.dueDate,
@@ -283,7 +306,9 @@ export class EdurEngine {
 
     candidates.push({
       id: 'candidate-hybrid',
+      candidateId: 'candidate-hybrid',
       name: 'Balanced Hybrid Strategy',
+      strategyName: 'Balanced Hybrid Strategy',
       strategy: 'HYBRID_PRIORITY_CASCADE',
       actions: cand3Actions,
     });
@@ -416,8 +441,22 @@ export class EdurEngine {
       const objective = this.evaluateObjective(cand, snapshot, config.weights);
       scoredCandidates.push({
         ...cand,
-        validation,
+        candidateId: cand.id,
+        strategyName: cand.name,
+        validation: {
+          ...validation,
+          isValid: validation.valid,
+        },
         objective,
+        objectiveScore: {
+          totalScore: objective.J,
+          reassignmentScore: objective.components?.reassignmentCost || 0,
+          delayScore: objective.components?.deadlineDelay || 0,
+          unaffectedScore: objective.components?.unaffectedChanges || 0,
+          workloadScore: objective.components?.workloadImbalance || 0,
+          handoffScore: objective.components?.handoffCost || 0,
+          residualScore: objective.components?.residualRisk || 0,
+        },
       });
     }
 
@@ -538,7 +577,11 @@ export class EdurEngine {
     if (!project) throw new Error('Project not found.');
 
     const currentVersion = project.scheduleVersion || 1;
-    if (expectedVersion !== undefined && expectedVersion !== currentVersion) {
+    if (
+      expectedVersion !== undefined &&
+      expectedVersion !== null &&
+      Number(expectedVersion) !== currentVersion
+    ) {
       throw new Error(
         `SCHEDULE_VERSION_CONFLICT: Expected schedule version ${expectedVersion}, but current database version is ${currentVersion}. Please reload.`
       );
@@ -586,18 +629,27 @@ export class EdurEngine {
     const newVersion = currentVersion + 1;
 
     for (const act of actions) {
-      const task = await Task.findOne({
-        project: projectId,
-        taskId: act.taskId,
-      });
+      const query = { project: projectId };
+      if (mongoose.isValidObjectId(act.taskId)) {
+        query.$or = [{ taskId: act.taskId }, { _id: act.taskId }];
+      } else {
+        query.taskId = act.taskId;
+      }
+      const task = await Task.findOne(query);
 
       if (!task || task.status === 'Completed') continue;
 
-      if (act.actionType === 'reassign' && act.recommendedAssigneeId) {
-        const newAssignee = await User.findById(act.recommendedAssigneeId);
-        if (newAssignee) {
-          task.assignee = newAssignee._id;
-          task.assigneeName = newAssignee.name;
+      if (act.actionType === 'reassign' || act.actionType === 'REALLOCATE') {
+        if (act.recommendedAssigneeId) {
+          const newAssignee = await User.findById(act.recommendedAssigneeId);
+          if (newAssignee) {
+            task.assignee = newAssignee._id;
+            task.assigneeName = newAssignee.name;
+          } else if (act.recommendedAssigneeName) {
+            task.assigneeName = act.recommendedAssigneeName;
+          }
+        } else if (act.recommendedAssigneeName) {
+          task.assigneeName = act.recommendedAssigneeName;
         }
       }
 

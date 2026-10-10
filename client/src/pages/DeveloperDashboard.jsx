@@ -54,11 +54,16 @@ export const DeveloperDashboard = () => {
       if (res.success && res.projects.length > 0) {
         setProjects(res.projects);
         setCurrentProject((prev) => {
-          if (prev?.id) {
-            const stillThere = res.projects.find((p) => p.id === prev.id || p._id === prev.id);
+          if (prev?.id || prev?._id) {
+            const currentId = prev.id || prev._id;
+            const stillThere = res.projects.find((p) => p.id === currentId || p._id === currentId);
             if (stillThere) return { ...stillThere, id: stillThere.id || stillThere._id };
           }
-          return res.projects[0];
+          if (res.projects[0]) {
+            const first = res.projects[0];
+            return { ...first, id: first.id || first._id };
+          }
+          return null;
         });
       } else if (res.success) {
         setProjects([]);
@@ -77,21 +82,22 @@ export const DeveloperDashboard = () => {
 
   // ── Load tasks whenever current project changes ───────────────────────────
   const loadTasks = useCallback(async () => {
-    if (!currentProject?.id) return;
+    const projId = currentProject?.id || currentProject?._id;
+    if (!projId) return;
     try {
       setLoadingTasks(true);
       let res;
       if (isPM) {
-        res = await tasksApi.getByProject(currentProject.id);
+        res = await tasksApi.getByProject(projId);
       } else {
         // Developer: load tasks for the current project matching their assigned role
-        res = await tasksApi.getByProject(currentProject.id);
+        res = await tasksApi.getByProject(projId);
         // If current project has 0 tasks for them, also check getMyTasks to ensure all assigned tasks are visible
         if (!res.success || !res.tasks || res.tasks.length === 0) {
           const myRes = await tasksApi.getMyTasks();
           if (myRes.success && myRes.tasks?.length > 0) {
             const currentProjTasks = myRes.tasks.filter(
-              (t) => String(t.project?.id || t.project?._id || t.project) === String(currentProject.id)
+              (t) => String(t.project?.id || t.project?._id || t.project) === String(projId)
             );
             res = currentProjTasks.length > 0 ? { success: true, tasks: currentProjTasks } : myRes;
           }
@@ -113,9 +119,10 @@ export const DeveloperDashboard = () => {
 
   // ── Load team members when current project changes (PM only) ─────────────
   const loadTeamMembers = useCallback(async () => {
-    if (!currentProject?.id || !isPM) return;
+    const projId = currentProject?.id || currentProject?._id;
+    if (!projId || !isPM) return;
     try {
-      const res = await projectsApi.getMembers(currentProject.id);
+      const res = await projectsApi.getMembers(projId);
       if (res.success) {
         const memberNames = res.members.map((m) => m.name);
         if (res.manager && !memberNames.includes(res.manager.name)) {

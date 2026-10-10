@@ -456,3 +456,116 @@ describe('EDUR: Independent Validator Barrier', () => {
     assert.ok(result.errors.length > 0);
   });
 });
+
+describe('EDUR: UI Property Compatibility & Version-Safe Persistence', () => {
+  const worker1Id = new mongoose.Types.ObjectId();
+  const worker2Id = new mongoose.Types.ObjectId();
+
+  const worker1 = {
+    _id: worker1Id,
+    name: 'Absent Person',
+    role: 'developer',
+    skills: ['React', 'CSS'],
+    subSkills: ['UI Component', 'State Management'],
+  };
+
+  const worker2 = {
+    _id: worker2Id,
+    name: 'Replacement Person',
+    role: 'developer',
+    skills: ['React', 'CSS'],
+    subSkills: ['UI Component', 'State Management'],
+  };
+
+  const snapshot = {
+    project: {
+      _id: new mongoose.Types.ObjectId(),
+      scheduleVersion: 1,
+    },
+    tasks: [
+      {
+        _id: new mongoose.Types.ObjectId(),
+        taskId: 'T-UI-1',
+        title: 'Build Interactive Dashboard Card',
+        status: 'In Progress',
+        assignee: worker1Id,
+        assigneeName: 'Absent Person',
+        dueDate: '2026-10-15',
+        effortHours: 8,
+        tags: ['React', 'UI Component'],
+      },
+    ],
+    members: [worker1, worker2],
+    unavailabilities: [],
+  };
+
+  test('should generate candidates with both backend and frontend alias properties', () => {
+    const affectedClosure = {
+      affectedTasks: [snapshot.tasks[0]],
+      downstreamTasks: [],
+      preservedCompletedTasks: [],
+    };
+    const scenario = {
+      userId: worker1Id,
+      workerName: 'Absent Person',
+      fromDate: '2026-10-12',
+      toDate: '2026-10-18',
+    };
+
+    const candidates = edurEngine.generateCandidates(snapshot, affectedClosure, scenario);
+
+    assert.ok(candidates.length >= 3, 'Must have at least 3 candidates');
+    for (const cand of candidates) {
+      assert.ok(cand.id, 'Candidate must have id');
+      assert.equal(cand.candidateId, cand.id, 'Candidate must provide candidateId alias');
+      assert.equal(cand.strategyName, cand.name, 'Candidate must provide strategyName alias');
+      assert.ok(cand.actions.length > 0, 'Must have actions');
+
+      const firstAction = cand.actions[0];
+      assert.ok(firstAction.taskId, 'Action must have taskId');
+      assert.ok(firstAction.taskTitle, 'Action must provide taskTitle for UI card display');
+      assert.ok(firstAction.unavailablePersonName, 'Action must provide unavailablePersonName');
+      assert.ok(firstAction.reason, 'Action must provide factual reason');
+    }
+  });
+
+  test('should score candidates and provide isValid and objectiveScore for RecoveryCenterView', () => {
+    const cand = {
+      id: 'candidate-test',
+      candidateId: 'candidate-test',
+      name: 'Test Strategy',
+      strategyName: 'Test Strategy',
+      actions: [
+        {
+          taskId: 'T-UI-1',
+          actionType: 'reassign',
+          recommendedAssigneeId: String(worker2Id),
+          recommendedAssigneeName: 'Replacement Person',
+          previousDueDate: '2026-10-15',
+          proposedDueDate: '2026-10-15',
+        },
+      ],
+    };
+
+    const validation = edurEngine.validateCandidate(cand, snapshot);
+    const objective = edurEngine.evaluateObjective(cand, snapshot);
+
+    const scored = {
+      ...cand,
+      validation: {
+        ...validation,
+        isValid: validation.valid,
+      },
+      objective,
+      objectiveScore: {
+        totalScore: objective.J,
+        reassignmentScore: objective.components?.reassignmentCost || 0,
+      },
+    };
+
+    assert.equal(scored.validation.isValid, true, 'Validation isValid alias must be true');
+    assert.equal(scored.validation.valid, true, 'Validation valid must be true');
+    assert.ok(typeof scored.objectiveScore.totalScore === 'number', 'totalScore must be number');
+  });
+});
+

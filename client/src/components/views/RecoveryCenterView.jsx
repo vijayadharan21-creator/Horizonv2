@@ -157,11 +157,13 @@ export const RecoveryCenterView = ({
           timestamp: new Date().toLocaleTimeString(),
         });
         // Select recommended candidate by default
-        if (data.selectedCandidate?.candidateId) {
-          setSelectedCandidateId(data.selectedCandidate.candidateId);
-        } else if (data.candidates?.length > 0) {
-          setSelectedCandidateId(data.candidates[0].candidateId);
-        }
+        const chosenId =
+          data.selectedCandidate?.candidateId ||
+          data.selectedCandidate?.id ||
+          data.candidates?.[0]?.candidateId ||
+          data.candidates?.[0]?.id ||
+          null;
+        setSelectedCandidateId(chosenId);
       } else {
         setSimError(res.message || 'Failed to generate uncertainty recovery plan.');
       }
@@ -176,9 +178,11 @@ export const RecoveryCenterView = ({
     }
   };
 
-  // Selected candidate object
+  // Selected candidate object (resolves both candidateId and id)
   const currentCandidate =
-    simulationResult?.candidates?.find((c) => c.candidateId === selectedCandidateId) ||
+    simulationResult?.candidates?.find(
+      (c) => (c.candidateId || c.id) === selectedCandidateId
+    ) ||
     simulationResult?.selectedCandidate ||
     null;
 
@@ -240,6 +244,93 @@ export const RecoveryCenterView = ({
         err.response?.data?.message ||
           err.message ||
           'Failed to apply recovery plan changes.'
+      );
+    } finally {
+      setIsApplying(false);
+    }
+  };
+
+  // ── Direct 1-Click: Record Leave & Auto-Apply Optimal Recovery Plan ────────
+  const handleDirectRecordLeaveAndRebalance = async () => {
+    if (!projectId) {
+      setSimError('Project identifier missing. Please select an active project.');
+      return;
+    }
+    const selectedMember = projectMembers.find(
+      (m) => String(m.id || m._id) === String(selectedMemberId)
+    );
+    if (!selectedMember) {
+      setSimError('Please select a team member.');
+      return;
+    }
+
+    try {
+      setIsApplying(true);
+      setSimError(null);
+      setApplySuccess(null);
+
+      const scenario = {
+        type: 'worker_unavailability',
+        userId: selectedMemberId,
+        workerName: selectedMember.name,
+        fromDate,
+        fromTime,
+        toDate,
+        toTime,
+        reason,
+        contextNotes: contextNotes.trim(),
+      };
+
+      // 1. Solve EDUR recovery pipeline
+      const recRes = await aiApi.getRecoveryRecommendations(projectId, scenario);
+      if (!recRes.success) {
+        throw new Error(recRes.message || 'Failed to generate recovery plan.');
+      }
+
+      const optimalCandidate = recRes.data.selectedCandidate || recRes.data.candidates?.[0];
+      const actionsToApply = optimalCandidate?.actions || [];
+
+      const unavailableInfo = {
+        userId: selectedMemberId,
+        userName: selectedMember.name,
+        fromDate,
+        fromTime,
+        toDate,
+        toTime,
+        reason,
+        subSkills: selectedMember.subSkills || selectedMember.skills || [],
+        contextNotes: contextNotes.trim(),
+      };
+
+      // 2. Commit atomically to MongoDB
+      const applyRes = await aiApi.applyRecoveryPlan(
+        projectId,
+        actionsToApply,
+        unavailableInfo,
+        recRes.data.scheduleVersion
+      );
+
+      if (applyRes.success) {
+        setApplySuccess(
+          `Recorded leave for ${selectedMember.name} and rebalanced ${actionsToApply.length} module(s) (Schedule v${applyRes.data?.newScheduleVersion || 2})!`
+        );
+        setSimulationResult({
+          ...recRes.data,
+          meta: recRes.meta,
+          timestamp: new Date().toLocaleTimeString(),
+        });
+        setSelectedCandidateId(optimalCandidate?.candidateId || optimalCandidate?.id);
+        await fetchMembers();
+        await fetchUncertainties();
+        if (onTriggerReplan) {
+          await onTriggerReplan();
+        }
+      } else {
+        setSimError(applyRes.message || 'Failed to apply recovery plan.');
+      }
+    } catch (err) {
+      setSimError(
+        err.response?.data?.message || err.message || 'Failed to record leave and apply rebalance.'
       );
     } finally {
       setIsApplying(false);
@@ -740,7 +831,7 @@ export const RecoveryCenterView = ({
               <div className="space-y-2 pt-1">
                 <button
                   type="submit"
-                  disabled={isSimulating}
+                  disabled={isSimulating || isApplying}
                   className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl text-xs font-semibold shadow-xs transition cursor-pointer flex items-center justify-center gap-2"
                 >
                   {isSimulating ? (
@@ -749,7 +840,23 @@ export const RecoveryCenterView = ({
                       <span>Solving Candidates & Validating Constraints...</span>
                     </>
                   ) : (
-                    '⚡ Generate EDUR Candidate Schedules'
+                    '⚡ Generate EDUR Candidate Schedules (Preview)'
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleDirectRecordLeaveAndRebalance}
+                  disabled={isSimulating || isApplying}
+                  className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-semibold shadow-xs transition cursor-pointer flex items-center justify-center gap-2"
+                >
+                  {isApplying ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                      <span>Recording Leave & Rebalancing Tasks...</span>
+                    </>
+                  ) : (
+                    '💾 Record Leave & Auto-Apply Optimal Plan'
                   )}
                 </button>
               </div>
@@ -802,12 +909,20 @@ export const RecoveryCenterView = ({
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                       {simulationResult.candidates.map((cand) => {
-                        const isSelected = cand.candidateId === selectedCandidateId;
-                        const isRecommended = simulationResult.selectedCandidate?.candidateId === cand.candidateId;
+                        const cId = cand.candidateId || cand.id;
+                        const isSelected = cId === selectedCandidateId;
+                        const recId = simulationResult.selectedCandidate?.candidateId || simulationResult.selectedCandidate?.id;
+                        const isRecommended = recId === cId;
+                        const isCandValid = cand.validation?.valid ?? cand.validation?.isValid ?? true;
+                        const totalScore = cand.objectiveScore?.totalScore ?? cand.objective?.J ?? 0;
+                        const reassignScore = cand.objectiveScore?.reassignmentScore ?? cand.objective?.components?.reassignmentCost ?? 0;
+                        const delayScore = cand.objectiveScore?.delayScore ?? cand.objective?.components?.deadlineDelay ?? 0;
+                        const stratName = cand.strategyName || cand.name || 'Candidate Strategy';
+
                         return (
                           <div
-                            key={cand.candidateId}
-                            onClick={() => setSelectedCandidateId(cand.candidateId)}
+                            key={cId}
+                            onClick={() => setSelectedCandidateId(cId)}
                             className={`p-3 rounded-xl border cursor-pointer transition flex flex-col justify-between text-xs ${
                               isSelected
                                 ? 'bg-indigo-50/70 border-indigo-400 ring-2 ring-indigo-400/20'
@@ -817,7 +932,7 @@ export const RecoveryCenterView = ({
                             <div>
                               <div className="flex items-center justify-between mb-1">
                                 <span className="font-bold text-slate-900 text-[11px]">
-                                  {cand.strategyName}
+                                  {stratName}
                                 </span>
                                 {isRecommended && (
                                   <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-100 text-emerald-800 uppercase">
@@ -826,15 +941,15 @@ export const RecoveryCenterView = ({
                                 )}
                               </div>
                               <div className="text-[10px] font-mono text-slate-600">
-                                Disruption Score: <strong className="text-indigo-700">{cand.objectiveScore?.totalScore || 0}</strong>
+                                Disruption Score: <strong className="text-indigo-700">{totalScore}</strong>
                               </div>
                               <div className="text-[9px] text-slate-400 mt-1">
-                                Reassignments: {cand.objectiveScore?.reassignmentScore || 0} | Max Delay: {cand.objectiveScore?.delayScore || 0}d
+                                Reassignments: {reassignScore} | Max Delay: {delayScore}d
                               </div>
                             </div>
 
                             <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between text-[10px]">
-                              {cand.validation?.isValid ? (
+                              {isCandValid ? (
                                 <span className="text-emerald-700 font-semibold flex items-center gap-1">
                                   <span>✓</span>
                                   <span>Validated (V1-V10)</span>
@@ -889,7 +1004,7 @@ export const RecoveryCenterView = ({
                               <span className="font-mono text-xs font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">
                                 {act.taskId}
                               </span>
-                              <span className="font-bold text-slate-900">{act.taskTitle}</span>
+                              <span className="font-bold text-slate-900">{act.taskTitle || `Task ${act.taskId}`}</span>
                             </div>
                             <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200">
                               {act.actionType}
@@ -899,7 +1014,7 @@ export const RecoveryCenterView = ({
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-slate-50/80 p-2 rounded-lg border border-slate-200/80 text-[11px]">
                             <div>
                               <span className="text-slate-500">Current / Previous: </span>
-                              <strong className="text-slate-700">{act.unavailablePersonName || 'Original'}</strong>
+                              <strong className="text-slate-700">{act.unavailablePersonName || act.previousAssignee || 'Original'}</strong>
                             </div>
                             <div>
                               <span className="text-slate-500">Target Assignee: </span>
@@ -958,7 +1073,7 @@ export const RecoveryCenterView = ({
               <button
                 type="button"
                 onClick={handleApplyPlan}
-                disabled={isApplying || !currentCandidate?.validation?.isValid}
+                disabled={isApplying || !(currentCandidate?.validation?.valid ?? currentCandidate?.validation?.isValid ?? true)}
                 className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-semibold shadow-xs transition cursor-pointer flex items-center justify-center gap-2 shrink-0"
               >
                 {isApplying ? (
@@ -967,7 +1082,7 @@ export const RecoveryCenterView = ({
                     <span>Persisting Schedule v{(simulationResult.scheduleVersion || 1) + 1}...</span>
                   </>
                 ) : (
-                  `Approve & Persist Candidate (${currentCandidate?.strategyName || 'Selected'}) →`
+                  `Approve & Persist Candidate (${currentCandidate?.strategyName || currentCandidate?.name || 'Selected Strategy'}) →`
                 )}
               </button>
             </div>

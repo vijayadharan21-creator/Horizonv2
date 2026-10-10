@@ -32,7 +32,7 @@ export const GanttTimelineView = ({
       }
     };
     fetchUnavailabilities();
-  }, [projectId, currentProject?.unavailabilities]);
+  }, [projectId, currentProject?.unavailabilities, tasks]);
 
   const days = [
     { label: 'Oct 6', isToday: false },
