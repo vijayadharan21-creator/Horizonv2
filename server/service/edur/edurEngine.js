@@ -533,39 +533,77 @@ export class EdurEngine {
    */
   async evaluatePostLeaveReturn({ projectId, userId, returnDate }) {
     const snapshot = await this.loadPlanningSnapshot(projectId);
-    const worker = snapshot.members.find((m) => String(m._id || m.id) === String(userId));
+    let worker = snapshot.members.find((m) => String(m._id || m.id) === String(userId));
+    if (!worker && userId) {
+      const u = await User.findById(userId).lean();
+      if (u) worker = u;
+    }
+    if (!worker) {
+      const unavail = snapshot.unavailabilities.find((u) => String(u.userId) === String(userId));
+      if (unavail) {
+        worker = { _id: unavail.userId, name: unavail.userName, skills: [], subSkills: [] };
+      }
+    }
     if (!worker) throw new Error('Worker not found in project.');
 
+    const returnDateStr = returnDate || new Date().toISOString().split('T')[0];
     const activeTasks = snapshot.tasks.filter((t) => t.status !== 'Completed');
 
-    // Find tasks that were previously assigned to this worker or are unassigned
-    const candidateTasks = activeTasks.filter((t) => {
-      return (
-        t.status === 'Pending' ||
-        t.status === 'To Do' ||
-        (t.status === 'In Progress' && (t.progress || 0) < 25)
-      );
-    });
+    const beneficialTransfers = [];
+    const formattedRecommendations = [];
 
-    const recommendations = [];
-    for (const task of candidateTasks) {
+    for (const task of activeTasks) {
       const skillScore = computeSkillMatchScore(task, worker);
-      if (skillScore >= 3) {
-        recommendations.push({
+      const isEarlyOrUnstarted =
+        task.status === 'Pending' ||
+        task.status === 'To Do' ||
+        (task.status === 'In Progress' && (task.progress || 0) < 25);
+      const isOriginallyTheirs =
+        String(task.assignee) === String(worker._id || worker.id) ||
+        task.assigneeName === worker.name ||
+        task.assigneeName === 'Unassigned' ||
+        !task.assignee;
+
+      if (isEarlyOrUnstarted && (skillScore >= 1 || isOriginallyTheirs)) {
+        const item = {
           taskId: task.taskId,
           title: task.title,
-          currentAssignee: task.assigneeName,
+          status: task.status,
+          currentAssignee: task.assigneeName || 'Unassigned',
+          action: 'REASSIGN_BACK',
           recommendation: 'TRANSFER_BACK_BENEFICIAL',
-          reason: `Original developer ${worker.name} returned. Transfer back is beneficial because task is in early stage (${task.progress || 0}% progress) and aligns directly with verified sub-skills.`,
+          reason: `Worker ${worker.name} returned on ${returnDateStr}. Early stage (${task.progress || 0}% progress) — safe to hand back with zero context disruption.`,
+        };
+        beneficialTransfers.push(item);
+        formattedRecommendations.push(item);
+      } else {
+        formattedRecommendations.push({
+          taskId: task.taskId,
+          title: task.title,
+          status: task.status,
+          currentAssignee: task.assigneeName || 'Unassigned',
+          action: 'KEEP_CURRENT',
+          recommendation: 'KEEP_CURRENT',
+          reason:
+            task.status === 'In Progress'
+              ? `In progress (${task.progress || 0}% progress). Retained with ${task.assigneeName} to prevent context-switching penalty.`
+              : 'Retained with current owner to minimize schedule disruption.',
         });
       }
     }
 
+    const reassignBackCount = beneficialTransfers.length;
+    const keepCount = formattedRecommendations.length - reassignBackCount;
+
     return {
       workerName: worker.name,
-      returnDate: returnDate || new Date().toISOString().split('T')[0],
-      evaluatedTaskCount: candidateTasks.length,
-      beneficialTransfers: recommendations,
+      returnDate: returnDateStr,
+      evaluatedTaskCount: activeTasks.length,
+      reassignBackCount,
+      keepCount,
+      beneficialTransfers,
+      recommendations: formattedRecommendations,
+      summary: `Analyzed ${activeTasks.length} active task(s) upon ${worker.name}'s return. Identified ${reassignBackCount} safe handback(s); preserved ${keepCount} in-progress task(s) to prevent context loss.`,
     };
   }
 

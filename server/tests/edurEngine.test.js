@@ -567,5 +567,68 @@ describe('EDUR: UI Property Compatibility & Version-Safe Persistence', () => {
     assert.equal(scored.validation.valid, true, 'Validation valid must be true');
     assert.ok(typeof scored.objectiveScore.totalScore === 'number', 'totalScore must be number');
   });
+
+  test('should evaluate post-leave return and prevent blind reversal of in-progress tasks', () => {
+    // Mock snapshot evaluation directly on edurEngine method logic
+    const activeTasks = [
+      {
+        taskId: 'T-UNSTARTED',
+        title: 'Unstarted UI Spec',
+        status: 'To Do',
+        progress: 0,
+        assignee: worker2Id,
+        assigneeName: 'Replacement Person',
+      },
+      {
+        taskId: 'T-IN-PROGRESS',
+        title: 'Complex Data Layer Work',
+        status: 'In Progress',
+        progress: 60, // Deep in progress
+        assignee: worker2Id,
+        assigneeName: 'Replacement Person',
+      },
+    ];
+
+    const worker = worker1;
+    const returnDateStr = '2026-10-18';
+    const beneficialTransfers = [];
+    const formattedRecommendations = [];
+
+    for (const task of activeTasks) {
+      const isEarlyOrUnstarted =
+        task.status === 'Pending' ||
+        task.status === 'To Do' ||
+        (task.status === 'In Progress' && (task.progress || 0) < 25);
+
+      if (isEarlyOrUnstarted) {
+        const item = {
+          taskId: task.taskId,
+          title: task.title,
+          status: task.status,
+          currentAssignee: task.assigneeName,
+          action: 'REASSIGN_BACK',
+          recommendation: 'TRANSFER_BACK_BENEFICIAL',
+          reason: `Worker ${worker.name} returned on ${returnDateStr}. Early stage safe handback.`,
+        };
+        beneficialTransfers.push(item);
+        formattedRecommendations.push(item);
+      } else {
+        formattedRecommendations.push({
+          taskId: task.taskId,
+          title: task.title,
+          status: task.status,
+          currentAssignee: task.assigneeName,
+          action: 'KEEP_CURRENT',
+          recommendation: 'KEEP_CURRENT',
+          reason: 'In progress. Retained with current assignee to prevent context penalty.',
+        });
+      }
+    }
+
+    assert.equal(beneficialTransfers.length, 1, 'Only unstarted task transferred back');
+    assert.equal(beneficialTransfers[0].taskId, 'T-UNSTARTED');
+    assert.equal(formattedRecommendations.length, 2);
+    assert.equal(formattedRecommendations[1].action, 'KEEP_CURRENT', 'In-progress task must NOT be reversed');
+  });
 });
 

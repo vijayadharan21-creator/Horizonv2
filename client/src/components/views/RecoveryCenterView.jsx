@@ -359,18 +359,39 @@ export const RecoveryCenterView = ({
 
   // ── Post-Leave Return Evaluation ──────────────────────────────────────────
   const handleOpenReturnModal = (userId) => {
-    setReturnMemberId(userId || (activeUnavailabilities[0]?.userId || ''));
+    const initialId =
+      userId ||
+      activeUnavailabilities[0]?.userId ||
+      projectMembers[0]?.id ||
+      projectMembers[0]?._id ||
+      '';
+    setReturnMemberId(String(initialId));
+    setReturnDate(new Date().toISOString().split('T')[0]);
     setReturnEvalResult(null);
     setReturnEvalError(null);
     setShowReturnModal(true);
   };
 
   const handleEvaluateReturn = async () => {
-    if (!projectId || !returnMemberId) return;
+    const effectiveMemberId =
+      returnMemberId ||
+      activeUnavailabilities[0]?.userId ||
+      projectMembers[0]?.id ||
+      projectMembers[0]?._id;
+
+    if (!projectId) {
+      setReturnEvalError('Project identifier missing.');
+      return;
+    }
+    if (!effectiveMemberId) {
+      setReturnEvalError('Please select a returning team member.');
+      return;
+    }
+
     setEvaluatingReturn(true);
     setReturnEvalError(null);
     try {
-      const res = await aiApi.evaluatePostLeaveReturn(projectId, returnMemberId, returnDate);
+      const res = await aiApi.evaluatePostLeaveReturn(projectId, effectiveMemberId, returnDate);
       if (res.success) {
         setReturnEvalResult(res.data);
       } else {
@@ -385,19 +406,28 @@ export const RecoveryCenterView = ({
 
   const handleApplyReturnPlan = async () => {
     if (!projectId || !returnEvalResult) return;
-    const reassignActions = returnEvalResult.recommendations
-      .filter((r) => r.action === 'REASSIGN_BACK')
+    const effectiveMemberId =
+      returnMemberId ||
+      activeUnavailabilities[0]?.userId ||
+      projectMembers[0]?.id ||
+      projectMembers[0]?._id;
+
+    const allRecs = returnEvalResult.recommendations || returnEvalResult.beneficialTransfers || [];
+    const reassignActions = allRecs
+      .filter((r) => r.action === 'REASSIGN_BACK' || r.recommendation === 'TRANSFER_BACK_BENEFICIAL')
       .map((r) => ({
         taskId: r.taskId,
-        recommendedAssigneeId: returnMemberId,
+        recommendedAssigneeId: effectiveMemberId,
         recommendedAssigneeName: returnEvalResult.workerName,
-        actionType: 'REALLOCATE',
+        actionType: 'reassign',
         reason: `Safe post-leave handback: ${r.reason}`,
       }));
 
     if (reassignActions.length === 0) {
       // Just clear unavailability
-      await handleClearUnavailability(returnMemberId);
+      if (effectiveMemberId) {
+        await handleClearUnavailability(effectiveMemberId);
+      }
       setShowReturnModal(false);
       return;
     }
@@ -405,8 +435,10 @@ export const RecoveryCenterView = ({
     try {
       setApplyingReturn(true);
       await aiApi.applyRecoveryPlan(projectId, reassignActions, null);
-      await aiApi.clearUnavailability(projectId, returnMemberId);
-      setApplySuccess(`Restored ${returnEvalResult.workerName} and safely reassigned ${reassignActions.length} future task(s).`);
+      if (effectiveMemberId) {
+        await aiApi.clearUnavailability(projectId, effectiveMemberId);
+      }
+      setApplySuccess(`Restored ${returnEvalResult.workerName} to Available status and safely transferred ${reassignActions.length} task(s).`);
       setShowReturnModal(false);
       await fetchMembers();
       await fetchUncertainties();
@@ -483,16 +515,14 @@ export const RecoveryCenterView = ({
             <span>Schedule Audits (v{currentProject?.scheduleVersion || 1})</span>
           </button>
 
-          {activeUnavailabilities.length > 0 && (
-            <button
-              type="button"
-              onClick={() => handleOpenReturnModal(activeUnavailabilities[0]?.userId)}
-              className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-xs font-semibold transition cursor-pointer flex items-center gap-1.5"
-            >
-              <span>🔄</span>
-              <span>Evaluate Worker Return</span>
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => handleOpenReturnModal(activeUnavailabilities[0]?.userId)}
+            className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-xs font-semibold transition cursor-pointer flex items-center gap-1.5"
+          >
+            <span>🔄</span>
+            <span>Evaluate Worker Return{activeUnavailabilities.length > 0 ? ` (${activeUnavailabilities.length})` : ''}</span>
+          </button>
         </div>
       </div>
 
