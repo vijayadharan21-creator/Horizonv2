@@ -18,6 +18,28 @@ const parseDateToIsoDay = (dateInput) => {
   return null;
 };
 
+// Calculate the exact date a developer restarts work (day after leave ends)
+const getWorkRestartDate = (toDateStr) => {
+  if (!toDateStr) return null;
+  const parsed = parseDateToIsoDay(toDateStr);
+  if (!parsed) return null;
+  const [y, m, d] = parsed.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + 1);
+  return parseDateToIsoDay(dt);
+};
+
+// Friendly format helper (e.g. "Oct 15")
+const formatShortDate = (isoStr) => {
+  if (!isoStr) return '';
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const parts = isoStr.split('-');
+  if (parts.length !== 3) return isoStr;
+  const m = Number(parts[1]) - 1;
+  const d = Number(parts[2]);
+  return `${months[m]} ${d}`;
+};
+
 export const GanttTimelineView = ({
   tasks = [],
   currentProject,
@@ -31,6 +53,7 @@ export const GanttTimelineView = ({
   const [projectMembers, setProjectMembers] = useState([]);
   const [dayOffset, setDayOffset] = useState(0);
   const [viewMode, setViewMode] = useState('project'); // 'project' (all tasks fit), 'sprint' (14d), 'month' (30d)
+  const [groupMode, setGroupMode] = useState('developer'); // 'developer' (swimlanes with leave/restart dates) or 'tasks' (flat list)
 
   const projectId = currentProject?.id || currentProject?._id;
 
@@ -88,8 +111,10 @@ export const GanttTimelineView = ({
     unavailabilities.forEach((u) => {
       const uFrom = parseDateToIsoDay(u.fromDate);
       const uTo = parseDateToIsoDay(u.toDate);
+      const uRestart = getWorkRestartDate(u.toDate);
       if (uFrom) allDates.push(uFrom);
       if (uTo) allDates.push(uTo);
+      if (uRestart) allDates.push(uRestart);
     });
 
     const validSortedDates = Array.from(new Set(allDates.filter(Boolean))).sort();
@@ -186,12 +211,17 @@ export const GanttTimelineView = ({
     return memberMatch?.availability?.status === 'unavailable';
   };
 
-  const getUnavailabilityInfo = (task) => {
-    const taskAssignee = task.assigneeName || task.assignee;
+  const getUnavailabilityInfo = (taskOrAssignee) => {
+    const assigneeStr = typeof taskOrAssignee === 'string'
+      ? taskOrAssignee
+      : taskOrAssignee.assigneeName || taskOrAssignee.assignee;
+
+    if (!assigneeStr) return null;
+
     return unavailabilities.find(
       (u) =>
-        u.userName?.toLowerCase() === String(taskAssignee).toLowerCase() ||
-        String(u.userId) === String(task.assignee)
+        u.userName?.toLowerCase() === String(assigneeStr).toLowerCase() ||
+        String(u.userId) === String(assigneeStr)
     );
   };
 
@@ -276,12 +306,13 @@ export const GanttTimelineView = ({
 
   // ── Calculate Position for Leave / Absence Interval ───────────────────────
   const getLeaveGridPosition = (u) => {
-    if (!days || days.length === 0) return { startCol: 1, span: 2 };
+    if (!days || days.length === 0 || !u) return null;
     const firstDay = days[0].dateStr;
     const lastDay = days[days.length - 1].dateStr;
 
     const lStart = parseDateToIsoDay(u.fromDate) || firstDay;
     const lEnd = parseDateToIsoDay(u.toDate) || lStart;
+    const restartDate = getWorkRestartDate(lEnd);
 
     if (lEnd < firstDay || lStart > lastDay) {
       return null; // Not visible in current window
@@ -296,17 +327,26 @@ export const GanttTimelineView = ({
     const startCol = sIdx !== -1 ? sIdx + 1 : 1;
     const endCol = eIdx !== -1 ? eIdx + 1 : days.length;
 
+    // Also calculate restart column if inside window
+    let restartCol = -1;
+    if (restartDate) {
+      const rIdx = days.findIndex((d) => d.dateStr === restartDate);
+      if (rIdx !== -1) restartCol = rIdx + 1;
+    }
+
     return {
       startCol,
       span: Math.max(1, endCol - startCol + 1),
+      restartCol,
+      restartDate,
       lStart,
       lEnd,
     };
   };
 
-  const getBarColor = (task) => {
+  const getBarColor = (task, isAssigneeUnavailable) => {
     // CRITICAL: Highlight in RED if assignee is on leave / unavailable
-    if (checkIsAssigneeUnavailable(task)) {
+    if (isAssigneeUnavailable) {
       return 'bg-rose-600 hover:bg-rose-700 text-white border-rose-700 shadow-sm ring-2 ring-rose-400';
     }
 
@@ -324,14 +364,103 @@ export const GanttTimelineView = ({
     }
   };
 
+  const uniqueAssignees = Array.from(
+    new Set(tasks.map((t) => t.assigneeName || t.assignee).filter(Boolean))
+  );
+
+  // ── Construct Developer Swimlanes with Exact Leave, Restart, and Task Dates ──
+  const developerLanes = useMemo(() => {
+    const devMap = new Map();
+
+    // 1. Initialize from project members
+    projectMembers.forEach((m) => {
+      const devId = String(m.id || m._id);
+      devMap.set(devId, {
+        id: devId,
+        name: m.name || 'Team Member',
+        role: m.role || 'Developer',
+        subSkills: m.subSkills || m.skills || [],
+        tasks: [],
+        unavailability: null,
+      });
+    });
+
+    // 2. Attach unavailabilities
+    unavailabilities.forEach((u) => {
+      let matched = null;
+      for (const [id, dev] of devMap.entries()) {
+        if (
+          String(id) === String(u.userId) ||
+          dev.name.toLowerCase() === (u.userName || '').toLowerCase()
+        ) {
+          matched = dev;
+          break;
+        }
+      }
+      if (matched) {
+        matched.unavailability = u;
+      } else if (u.userName) {
+        const fallbackId = String(u.userId || u.userName);
+        devMap.set(fallbackId, {
+          id: fallbackId,
+          name: u.userName,
+          role: 'Developer',
+          subSkills: [],
+          tasks: [],
+          unavailability: u,
+        });
+      }
+    });
+
+    // 3. Assign tasks to each developer lane
+    tasks.forEach((t) => {
+      const tAssigneeName = t.assigneeName || '';
+      const tAssigneeId = String(t.assignee || '');
+
+      let matchedDev = null;
+      for (const [id, dev] of devMap.entries()) {
+        if (
+          (tAssigneeId && String(id) === tAssigneeId) ||
+          (tAssigneeName && dev.name.toLowerCase() === tAssigneeName.toLowerCase())
+        ) {
+          matchedDev = dev;
+          break;
+        }
+      }
+
+      if (matchedDev) {
+        matchedDev.tasks.push(t);
+      } else {
+        const fallbackId = tAssigneeName || 'Unassigned';
+        if (!devMap.has(fallbackId)) {
+          devMap.set(fallbackId, {
+            id: fallbackId,
+            name: tAssigneeName || 'Unassigned',
+            role: 'Team Member',
+            subSkills: [],
+            tasks: [],
+            unavailability: null,
+          });
+        }
+        devMap.get(fallbackId).tasks.push(t);
+      }
+    });
+
+    // Filter by assignee filter if chosen
+    let result = Array.from(devMap.values());
+    if (assigneeFilter !== 'All') {
+      result = result.filter(
+        (dev) => dev.name.toLowerCase() === assigneeFilter.toLowerCase()
+      );
+    }
+
+    return result;
+  }, [projectMembers, unavailabilities, tasks, assigneeFilter]);
+
   const filteredTasks = tasks.filter((t) => {
     const assigneeName = t.assigneeName || t.assignee;
     return assigneeFilter === 'All' || assigneeName === assigneeFilter;
   });
-
-  const uniqueAssignees = Array.from(
-    new Set(tasks.map((t) => t.assigneeName || t.assignee).filter(Boolean))
-  );
 
   return (
     <div className="p-5 sm:p-7 space-y-6 max-w-7xl mx-auto animate-in fade-in duration-150">
@@ -350,11 +479,39 @@ export const GanttTimelineView = ({
             )}
           </div>
           <p className="text-xs sm:text-sm text-slate-500 mt-1">
-            Gantt schedule synchronized with project deadline, live task durations, and leave absences.
+            Gantt schedule synchronized with developer leave intervals, work restart dates, and exact module durations.
           </p>
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Grouping Toggle: Developer Swimlanes vs Flat Task List */}
+          <div className="flex items-center bg-slate-100 p-1 rounded-xl text-xs font-semibold">
+            <button
+              type="button"
+              onClick={() => setGroupMode('developer')}
+              className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                groupMode === 'developer'
+                  ? 'bg-white text-indigo-700 shadow-xs'
+                  : 'text-slate-500 hover:text-slate-900'
+              }`}
+            >
+              <span>👥</span>
+              <span>By Developer</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setGroupMode('tasks')}
+              className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                groupMode === 'tasks'
+                  ? 'bg-white text-indigo-700 shadow-xs'
+                  : 'text-slate-500 hover:text-slate-900'
+              }`}
+            >
+              <span>📋</span>
+              <span>All Tasks</span>
+            </button>
+          </div>
+
           {/* Assignee Filter */}
           <select
             value={assigneeFilter}
@@ -370,6 +527,64 @@ export const GanttTimelineView = ({
           </select>
         </div>
       </div>
+
+      {/* ─── DEVELOPER LEAVE & RESTART WORK TRACKER BANNER ──────────────────── */}
+      {unavailabilities.length > 0 && (
+        <div className="bg-gradient-to-r from-rose-900 via-rose-800 to-slate-900 text-white rounded-2xl p-4 shadow-sm border border-rose-700/60 space-y-3">
+          <div className="flex items-center justify-between pb-2 border-b border-rose-700/40">
+            <div className="flex items-center gap-2">
+              <span className="text-xl">🌴</span>
+              <h3 className="font-bold text-sm text-white">
+                Developer Leave & Work Restart Schedule
+              </h3>
+            </div>
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500/30 text-rose-200 border border-rose-400/40">
+              Deterministic Recovery Available in Uncertainty Center
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {unavailabilities.map((u, idx) => {
+              const restartDate = getWorkRestartDate(u.toDate);
+              return (
+                <div
+                  key={idx}
+                  className="bg-black/30 backdrop-blur-xs p-3 rounded-xl border border-white/10 space-y-2 text-xs"
+                >
+                  <div className="flex items-center justify-between">
+                    <strong className="text-white text-sm font-bold flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-rose-400 animate-ping"></span>
+                      <span>{u.userName}</span>
+                    </strong>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-500 text-white">
+                      {u.reason || 'Leave'}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 text-[11px] pt-1">
+                    <div className="bg-rose-950/60 p-2 rounded-lg border border-rose-500/30">
+                      <span className="text-rose-300 block text-[9px] uppercase font-bold">Leave Window</span>
+                      <strong className="text-white font-mono text-xs block">
+                        {formatShortDate(u.fromDate)} ➔ {formatShortDate(u.toDate)}
+                      </strong>
+                    </div>
+
+                    <div className="bg-emerald-950/70 p-2 rounded-lg border border-emerald-500/30">
+                      <span className="text-emerald-300 block text-[9px] uppercase font-bold flex items-center gap-1">
+                        <span>🔄</span>
+                        <span>Restarts Work</span>
+                      </span>
+                      <strong className="text-emerald-200 font-mono text-xs block">
+                        {restartDate ? formatShortDate(restartDate) : 'Next Day'}
+                      </strong>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* ─── PROJECT SYNCHRONIZATION & DATE CONTROLS BANNER ─────────────────── */}
       <div className="bg-slate-900 text-white rounded-2xl p-4 shadow-sm border border-slate-800 flex flex-wrap items-center justify-between gap-4">
@@ -416,7 +631,7 @@ export const GanttTimelineView = ({
 
           <div className="border-l border-slate-800 pl-4">
             <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">
-              Timeline Scope
+              Visible Timeline
             </span>
             <span className="text-slate-200 font-mono text-[11px]">
               {visibleStartStr} ➔ {visibleEndStr} ({days.length} Days)
@@ -446,7 +661,7 @@ export const GanttTimelineView = ({
                 viewMode === 'project' ? 'bg-indigo-600 text-white shadow-2xs' : 'text-slate-400 hover:text-white'
               }`}
             >
-              Project Fit (All Tasks)
+              Project Fit
             </button>
             <button
               type="button"
@@ -503,28 +718,6 @@ export const GanttTimelineView = ({
         </div>
       </div>
 
-      {/* Unavailability Banner */}
-      {unavailabilities.length > 0 && (
-        <div className="bg-rose-50/90 border border-rose-200 rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs">
-          <div className="flex items-center gap-2.5">
-            <span className="text-xl">🚨</span>
-            <div>
-              <span className="font-bold text-rose-900">
-                Active Absence Schedules (Highlighted in Red):
-              </span>{' '}
-              <span className="text-rose-700">
-                {unavailabilities
-                  .map((u) => `${u.userName} (${u.fromDate} to ${u.toDate} — ${u.reason || 'Leave'})`)
-                  .join(' • ')}
-              </span>
-            </div>
-          </div>
-          <span className="text-[10px] font-bold px-2.5 py-1 rounded-lg bg-rose-200 text-rose-900 uppercase tracking-wider">
-            Hard Constraint Enforced
-          </span>
-        </div>
-      )}
-
       {/* ─── UNIFIED GANTT CHART (STICKY TASK COLUMN + SYNCHRONIZED CALENDAR GRID) ─── */}
       <div className="bg-white border border-slate-200/90 rounded-2xl shadow-xs overflow-hidden">
         {/* Legend */}
@@ -545,7 +738,11 @@ export const GanttTimelineView = ({
             </div>
             <div className="flex items-center gap-1.5">
               <span className="w-2.5 h-2.5 rounded-full bg-rose-600 ring-2 ring-rose-300 animate-pulse"></span>
-              <span className="text-rose-700 font-bold">On Leave / Conflict (Red Alert)</span>
+              <span className="text-rose-700 font-bold">On Leave / Conflict</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-sm bg-emerald-600"></span>
+              <span className="text-emerald-700 font-bold">Work Restarts Date</span>
             </div>
             {deadlineIndex !== -1 && (
               <div className="flex items-center gap-1.5">
@@ -556,7 +753,7 @@ export const GanttTimelineView = ({
           </div>
 
           <div className="text-slate-400 text-[11px] flex items-center gap-1">
-            <span>💡 Click any task bar to inspect details and dependency linkages</span>
+            <span>💡 Click any task bar to inspect start/end dates, dependencies, and absence impacts</span>
           </div>
         </div>
 
@@ -566,9 +763,9 @@ export const GanttTimelineView = ({
             {/* Header Row */}
             <div className="flex bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600 select-none">
               {/* Sticky Task Header */}
-              <div className="w-80 min-w-[20rem] sticky left-0 z-30 bg-slate-50 border-r border-slate-200 px-4 py-3 flex items-center justify-between shadow-2xs">
-                <span>Task & Assignee</span>
-                <span className="text-[10px] text-slate-400 font-mono">DATES & EFFORT</span>
+              <div className="w-96 min-w-[24rem] sticky left-0 z-30 bg-slate-50 border-r border-slate-200 px-4 py-3 flex items-center justify-between shadow-2xs">
+                <span>{groupMode === 'developer' ? 'Developer & Assigned Modules' : 'Task & Assignee'}</span>
+                <span className="text-[10px] text-slate-400 font-mono">START ➔ END DATES</span>
               </div>
 
               {/* Day Headers Grid */}
@@ -609,159 +806,364 @@ export const GanttTimelineView = ({
               </div>
             </div>
 
-            {/* Leave Bands (if any) */}
-            {unavailabilities.length > 0 && (
-              <div className="bg-rose-50/40 divide-y divide-rose-100/80">
-                {unavailabilities.map((u, uIdx) => {
-                  const pos = getLeaveGridPosition(u);
-                  if (!pos) return null;
+            {/* ─── MODE A: GROUP BY DEVELOPER (SWIMLANES WITH LEAVE & RESTART DATES) ─── */}
+            {groupMode === 'developer' ? (
+              developerLanes.length === 0 ? (
+                <div className="p-12 text-center text-slate-400 text-xs">
+                  No developers found in this project.
+                </div>
+              ) : (
+                developerLanes.map((dev) => {
+                  const unavail = dev.unavailability;
+                  const leavePos = getLeaveGridPosition(unavail);
+                  const restartDate = unavail ? getWorkRestartDate(unavail.toDate) : null;
+                  const devTotalHours = dev.tasks.reduce((sum, t) => sum + (t.effortHours || 0), 0);
 
                   return (
-                    <div key={uIdx} className="flex items-center text-xs py-2">
-                      <div className="w-80 min-w-[20rem] sticky left-0 z-20 bg-rose-50/90 border-r border-rose-200 px-4 flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full bg-rose-600 animate-ping shrink-0"></span>
-                        <div className="truncate">
-                          <strong className="text-rose-900 block truncate">{u.userName}</strong>
-                          <span className="text-[10px] text-rose-700">Out of Office</span>
+                    <div key={dev.id} className="divide-y divide-slate-100/70">
+                      {/* Developer Lane Header Row */}
+                      <div className="flex items-center bg-slate-100/80 border-y border-slate-200 py-2.5">
+                        {/* Sticky Developer Info Header */}
+                        <div className="w-96 min-w-[24rem] sticky left-0 z-25 bg-slate-100/95 border-r border-slate-200 px-4 flex items-center justify-between">
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-7 h-7 rounded-full bg-indigo-600 text-white font-bold flex items-center justify-center text-xs shadow-2xs">
+                              {dev.name.charAt(0).toUpperCase()}
+                            </div>
+                            <div>
+                              <strong className="text-slate-900 text-xs font-bold block">
+                                {dev.name}
+                              </strong>
+                              <span className="text-[10px] text-slate-500 font-medium">
+                                {dev.role} • {dev.tasks.length} task(s) • {devTotalHours}h
+                              </span>
+                            </div>
+                          </div>
+
+                          {unavail ? (
+                            <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-rose-100 text-rose-800 border border-rose-300">
+                              ON LEAVE
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                              AVAILABLE
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Developer Status Description across grid */}
+                        <div className="px-4 text-xs">
+                          {unavail ? (
+                            <div className="flex flex-wrap items-center gap-3 text-[11px]">
+                              <span className="font-bold text-rose-800 flex items-center gap-1">
+                                <span>🚨 Leaves On:</span>
+                                <span className="font-mono bg-rose-200/80 px-1.5 py-0.5 rounded text-rose-900 font-bold">
+                                  {unavail.fromDate}
+                                </span>
+                                <span>➔ Returns:</span>
+                                <span className="font-mono bg-rose-200/80 px-1.5 py-0.5 rounded text-rose-900 font-bold">
+                                  {unavail.toDate}
+                                </span>
+                              </span>
+
+                              <span className="font-bold text-emerald-800 flex items-center gap-1 bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-300">
+                                <span>🔄 Restarts Work On:</span>
+                                <span className="font-mono text-emerald-950 font-extrabold underline">
+                                  {restartDate || 'Day After'}
+                                </span>
+                              </span>
+
+                              <span className="text-slate-500 italic text-[10px]">
+                                ({unavail.reason || 'Leave'})
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-[11px] text-emerald-700 font-medium flex items-center gap-1">
+                              <span>✓</span>
+                              <span>Active full capacity across sprint</span>
+                            </span>
+                          )}
                         </div>
                       </div>
 
-                      <div
-                        className="grid px-1 relative items-center"
-                        style={{ gridTemplateColumns: `repeat(${days.length}, 48px)` }}
-                      >
-                        <div
-                          className="h-6 rounded-lg px-2 flex items-center justify-between text-[10px] font-bold bg-rose-600 text-white shadow-2xs"
-                          style={{
-                            gridColumnStart: pos.startCol,
-                            gridColumnEnd: `span ${pos.span}`,
-                          }}
-                        >
-                          <span className="truncate">🚫 Out of Office: {u.reason || 'Leave'}</span>
-                          <span className="text-[9px] font-mono shrink-0 ml-1.5 opacity-90">
-                            {pos.lStart} ➔ {pos.lEnd}
-                          </span>
+                      {/* Developer's Leave Interval Bar (if absent) */}
+                      {unavail && leavePos && (
+                        <div className="flex items-center text-xs py-1.5 bg-rose-50/50">
+                          <div className="w-96 min-w-[24rem] sticky left-0 z-20 bg-rose-50/95 border-r border-rose-200 px-4 py-1 flex items-center justify-between text-[11px]">
+                            <div className="flex items-center gap-1.5 text-rose-900 font-bold">
+                              <span>🚫</span>
+                              <span>Absence Interval:</span>
+                              <span className="font-mono text-[10px] text-rose-700">
+                                {unavail.fromDate} ➔ {unavail.toDate}
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-300">
+                              Restart: {restartDate}
+                            </div>
+                          </div>
+
+                          <div
+                            className="grid px-1 relative items-center"
+                            style={{ gridTemplateColumns: `repeat(${days.length}, 48px)` }}
+                          >
+                            <div
+                              className="h-6 rounded-lg px-2 flex items-center justify-between text-[10px] font-bold bg-rose-600 text-white shadow-2xs"
+                              style={{
+                                gridColumnStart: leavePos.startCol,
+                                gridColumnEnd: `span ${leavePos.span}`,
+                              }}
+                            >
+                              <span className="truncate">🚫 Out of Office ({unavail.reason || 'Leave'})</span>
+                              <span className="text-[9px] font-mono shrink-0 ml-1.5 opacity-90">
+                                {leavePos.lStart} ➔ {leavePos.lEnd}
+                              </span>
+                            </div>
+
+                            {/* Restart Day Marker on Calendar Grid */}
+                            {leavePos.restartCol !== -1 && (
+                              <div
+                                style={{ gridColumnStart: leavePos.restartCol, gridColumnEnd: leavePos.restartCol + 1 }}
+                                className="h-6 rounded-lg px-1 flex items-center justify-center text-[9px] font-extrabold bg-emerald-600 text-white shadow-2xs animate-pulse"
+                                title={`Developer ${dev.name} restarts work on ${restartDate}`}
+                              >
+                                <span>🔄 Resume</span>
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Task Rows */}
-            {filteredTasks.length === 0 ? (
-              <div className="p-12 text-center text-slate-400 text-xs">
-                No tasks match the selected assignee filter.
-              </div>
-            ) : (
-              filteredTasks.map((task, idx) => {
-                const pos = getTaskGridPosition(task);
-                const isUnavailable = checkIsAssigneeUnavailable(task);
-                const barColor = getBarColor(task);
-                const assigneeName = task.assigneeName || task.assignee || 'Unassigned';
-
-                return (
-                  <div
-                    key={task.id || task._id || idx}
-                    className={`flex items-center hover:bg-slate-50/80 transition group text-xs min-h-[56px] ${
-                      isUnavailable ? 'bg-rose-50/20' : ''
-                    }`}
-                  >
-                    {/* Sticky Task Metadata Column */}
-                    <div
-                      className={`w-80 min-w-[20rem] sticky left-0 z-20 bg-white group-hover:bg-slate-50 border-r border-slate-100 px-4 py-2.5 min-w-0 transition shadow-2xs ${
-                        isUnavailable ? 'bg-rose-50/30' : ''
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-[11px] font-bold text-slate-500 shrink-0">
-                          {task.taskId || task.id}
-                        </span>
-                        <span
-                          className="font-semibold text-slate-800 truncate"
-                          title={task.title}
-                        >
-                          {task.title}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center flex-wrap gap-1.5 text-[10px] text-slate-400 mt-1">
-                        <span className={isUnavailable ? 'font-bold text-rose-700' : 'text-slate-600'}>
-                          {assigneeName}
-                        </span>
-                        {isUnavailable && (
-                          <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-rose-100 text-rose-800 border border-rose-300">
-                            ON LEAVE
-                          </span>
-                        )}
-                        <span>•</span>
-                        <span>{task.effortHours}h</span>
-                        {task.dueDate && (
-                          <>
-                            <span>•</span>
-                            <span className="font-mono text-slate-500">
-                              📅 {parseDateToIsoDay(task.dueDate)}
-                            </span>
-                          </>
-                        )}
-                        {task.dependency && (
-                          <>
-                            <span>•</span>
-                            <span className="text-blue-600 font-medium">
-                              Waits for {task.dependency}
-                            </span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Timeline Grid Cell with In-Grid Vertical Marker Lines */}
-                    <div
-                      className="grid relative items-center py-2 px-1 h-full"
-                      style={{ gridTemplateColumns: `repeat(${days.length}, 48px)` }}
-                    >
-                      {/* In-Grid Today Column Marker */}
-                      {todayIndex !== -1 && (
-                        <div
-                          className="absolute inset-y-0 pointer-events-none z-10 border-r-2 border-dashed border-blue-400/80"
-                          style={{
-                            left: `${todayIndex * 48 + 24}px`,
-                          }}
-                        ></div>
                       )}
 
-                      {/* In-Grid Milestone Deadline Marker */}
-                      {deadlineIndex !== -1 && (
-                        <div
-                          className="absolute inset-y-0 pointer-events-none z-10 border-r-2 border-red-500 shadow-xs"
-                          style={{
-                            left: `${deadlineIndex * 48 + 24}px`,
-                          }}
-                        ></div>
-                      )}
-
-                      {/* Out of Range Notice (if past or future) */}
-                      {pos.outOfRange === 'past' ? (
-                        <div
-                          style={{ gridColumnStart: 1, gridColumnEnd: 3 }}
-                          onClick={() => setSelectedTask(task)}
-                          className="h-7 rounded-lg px-2 flex items-center gap-1 text-[10px] font-medium bg-slate-100 text-slate-500 border border-slate-200 cursor-pointer"
-                        >
-                          <span>◀</span>
-                          <span className="truncate">Finished ({pos.tDue})</span>
-                        </div>
-                      ) : pos.outOfRange === 'future' ? (
-                        <div
-                          style={{ gridColumnStart: Math.max(1, days.length - 2), gridColumnEnd: days.length + 1 }}
-                          onClick={() => setSelectedTask(task)}
-                          className="h-7 rounded-lg px-2 flex items-center justify-end gap-1 text-[10px] font-medium bg-slate-100 text-slate-500 border border-slate-200 cursor-pointer"
-                        >
-                          <span className="truncate">Starts {pos.tStart}</span>
-                          <span>▶</span>
+                      {/* Developer's Assigned Tasks */}
+                      {dev.tasks.length === 0 ? (
+                        <div className="flex items-center py-2.5 text-xs text-slate-400">
+                          <div className="w-96 min-w-[24rem] sticky left-0 z-20 bg-white border-r border-slate-100 px-4 py-1 text-[11px] italic">
+                            No tasks currently scheduled for {dev.name}.
+                          </div>
                         </div>
                       ) : (
-                        /* Standard Gantt Bar */
+                        dev.tasks.map((task, tIdx) => {
+                          const pos = getTaskGridPosition(task);
+                          const isUnavailable = Boolean(unavail);
+                          const barColor = getBarColor(task, isUnavailable);
+
+                          // Check if task directly overlaps leave window
+                          const isDirectLeaveOverlap =
+                            unavail &&
+                            pos.tStart &&
+                            pos.tDue &&
+                            pos.tStart <= unavail.toDate &&
+                            pos.tDue >= unavail.fromDate;
+
+                          return (
+                            <div
+                              key={task.id || task._id || tIdx}
+                              className={`flex items-center hover:bg-slate-50/80 transition group text-xs min-h-[58px] ${
+                                isDirectLeaveOverlap ? 'bg-rose-50/30' : ''
+                              }`}
+                            >
+                              {/* Sticky Task Metadata Column (Showing explicit Start & Due Dates) */}
+                              <div
+                                className={`w-96 min-w-[24rem] sticky left-0 z-20 bg-white group-hover:bg-slate-50 border-r border-slate-100 px-4 py-2 min-w-0 transition shadow-2xs ${
+                                  isDirectLeaveOverlap ? 'bg-rose-50/40' : ''
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-1">
+                                  <div className="flex items-center gap-1.5 truncate">
+                                    <span className="font-mono text-[11px] font-bold text-slate-500 shrink-0">
+                                      {task.taskId || task.id}
+                                    </span>
+                                    <span
+                                      className="font-semibold text-slate-800 truncate"
+                                      title={task.title}
+                                    >
+                                      {task.title}
+                                    </span>
+                                  </div>
+
+                                  <span className="text-[10px] font-semibold text-slate-400 font-mono shrink-0">
+                                    {task.effortHours}h
+                                  </span>
+                                </div>
+
+                                {/* Explicit START DATE and END DATE Chips */}
+                                <div className="flex items-center flex-wrap gap-2 text-[10px] mt-1.5">
+                                  <div className="flex items-center gap-1 bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-mono">
+                                    <span className="text-emerald-700 font-bold">START:</span>
+                                    <strong>{pos.tStart}</strong>
+                                  </div>
+
+                                  <div className="flex items-center gap-1 bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-mono">
+                                    <span className="text-blue-700 font-bold">END:</span>
+                                    <strong>{pos.tDue}</strong>
+                                  </div>
+
+                                  {isDirectLeaveOverlap && (
+                                    <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-rose-600 text-white animate-pulse">
+                                      ⚠️ OVERLAPS LEAVE!
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Timeline Grid Cell with In-Grid Vertical Lines & Task Bar */}
+                              <div
+                                className="grid relative items-center py-2 px-1 h-full"
+                                style={{ gridTemplateColumns: `repeat(${days.length}, 48px)` }}
+                              >
+                                {/* In-Grid Today Column Marker */}
+                                {todayIndex !== -1 && (
+                                  <div
+                                    className="absolute inset-y-0 pointer-events-none z-10 border-r-2 border-dashed border-blue-400/80"
+                                    style={{
+                                      left: `${todayIndex * 48 + 24}px`,
+                                    }}
+                                  ></div>
+                                )}
+
+                                {/* In-Grid Milestone Deadline Marker */}
+                                {deadlineIndex !== -1 && (
+                                  <div
+                                    className="absolute inset-y-0 pointer-events-none z-10 border-r-2 border-red-500 shadow-xs"
+                                    style={{
+                                      left: `${deadlineIndex * 48 + 24}px`,
+                                    }}
+                                  ></div>
+                                )}
+
+                                {/* Out of Range Notice (if past or future) */}
+                                {pos.outOfRange === 'past' ? (
+                                  <div
+                                    style={{ gridColumnStart: 1, gridColumnEnd: 3 }}
+                                    onClick={() => setSelectedTask(task)}
+                                    className="h-7 rounded-lg px-2 flex items-center gap-1 text-[10px] font-medium bg-slate-100 text-slate-500 border border-slate-200 cursor-pointer"
+                                  >
+                                    <span>◀</span>
+                                    <span className="truncate">Finished ({pos.tDue})</span>
+                                  </div>
+                                ) : pos.outOfRange === 'future' ? (
+                                  <div
+                                    style={{ gridColumnStart: Math.max(1, days.length - 2), gridColumnEnd: days.length + 1 }}
+                                    onClick={() => setSelectedTask(task)}
+                                    className="h-7 rounded-lg px-2 flex items-center justify-end gap-1 text-[10px] font-medium bg-slate-100 text-slate-500 border border-slate-200 cursor-pointer"
+                                  >
+                                    <span className="truncate">Starts {pos.tStart}</span>
+                                    <span>▶</span>
+                                  </div>
+                                ) : (
+                                  /* Standard Gantt Bar with explicit Start and End dates */
+                                  <div
+                                    onClick={() => setSelectedTask(task)}
+                                    className={`h-8 rounded-xl px-2.5 flex items-center justify-between text-xs font-medium cursor-pointer shadow-2xs transition transform hover:scale-[1.01] ${barColor}`}
+                                    style={{
+                                      gridColumnStart: pos.startCol,
+                                      gridColumnEnd: `span ${pos.span}`,
+                                    }}
+                                  >
+                                    <div className="truncate font-semibold text-[11px] flex items-center gap-1.5">
+                                      {pos.clippedLeft && <span className="text-[10px] opacity-80">◀</span>}
+                                      {isDirectLeaveOverlap && <span>⚠️</span>}
+                                      <span className="truncate">{task.title}</span>
+                                    </div>
+
+                                    <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                                      <span className="text-[9px] font-mono opacity-90 hidden sm:inline bg-black/20 px-1.5 py-0.5 rounded">
+                                        {formatShortDate(pos.tStart)} ➔ {formatShortDate(pos.tDue)}
+                                      </span>
+                                      <span className="text-[10px] opacity-90 font-bold bg-black/20 px-1.5 py-0.5 rounded">
+                                        {isDirectLeaveOverlap ? 'CONFLICT' : `${task.progress || 0}%`}
+                                      </span>
+                                      {pos.clippedRight && <span className="text-[10px] opacity-80">▶</span>}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  );
+                })
+              )
+            ) : (
+              /* ─── MODE B: FLAT TASK LIST ─── */
+              filteredTasks.length === 0 ? (
+                <div className="p-12 text-center text-slate-400 text-xs">
+                  No tasks match the selected filter.
+                </div>
+              ) : (
+                filteredTasks.map((task, idx) => {
+                  const pos = getTaskGridPosition(task);
+                  const isUnavailable = checkIsAssigneeUnavailable(task);
+                  const barColor = getBarColor(task, isUnavailable);
+                  const assigneeName = task.assigneeName || task.assignee || 'Unassigned';
+                  const unavail = getUnavailabilityInfo(task);
+                  const restartDate = unavail ? getWorkRestartDate(unavail.toDate) : null;
+
+                  return (
+                    <div
+                      key={task.id || task._id || idx}
+                      className={`flex items-center hover:bg-slate-50/80 transition group text-xs min-h-[58px] ${
+                        isUnavailable ? 'bg-rose-50/20' : ''
+                      }`}
+                    >
+                      {/* Sticky Task Metadata Column */}
+                      <div
+                        className={`w-96 min-w-[24rem] sticky left-0 z-20 bg-white group-hover:bg-slate-50 border-r border-slate-100 px-4 py-2 min-w-0 transition shadow-2xs ${
+                          isUnavailable ? 'bg-rose-50/30' : ''
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <div className="flex items-center gap-1.5 truncate">
+                            <span className="font-mono text-[11px] font-bold text-slate-500 shrink-0">
+                              {task.taskId || task.id}
+                            </span>
+                            <span
+                              className="font-semibold text-slate-800 truncate"
+                              title={task.title}
+                            >
+                              {task.title}
+                            </span>
+                          </div>
+                          <span className="text-[10px] font-mono text-slate-400">{task.effortHours}h</span>
+                        </div>
+
+                        <div className="flex items-center flex-wrap gap-1.5 text-[10px] text-slate-500 mt-1">
+                          <span className={isUnavailable ? 'font-bold text-rose-700' : 'text-slate-700'}>
+                            👤 {assigneeName}
+                          </span>
+                          <span>•</span>
+                          <span className="bg-slate-100 px-1.5 py-0.2 rounded font-mono">
+                            <strong className="text-emerald-700">Start:</strong> {pos.tStart}
+                          </span>
+                          <span className="bg-slate-100 px-1.5 py-0.2 rounded font-mono">
+                            <strong className="text-blue-700">End:</strong> {pos.tDue}
+                          </span>
+                          {isUnavailable && (
+                            <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-rose-100 text-rose-800 border border-rose-300">
+                              ON LEAVE (Restarts {restartDate})
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Timeline Grid Cell */}
+                      <div
+                        className="grid relative items-center py-2 px-1 h-full"
+                        style={{ gridTemplateColumns: `repeat(${days.length}, 48px)` }}
+                      >
+                        {todayIndex !== -1 && (
+                          <div
+                            className="absolute inset-y-0 pointer-events-none z-10 border-r-2 border-dashed border-blue-400/80"
+                            style={{ left: `${todayIndex * 48 + 24}px` }}
+                          ></div>
+                        )}
+                        {deadlineIndex !== -1 && (
+                          <div
+                            className="absolute inset-y-0 pointer-events-none z-10 border-r-2 border-red-500 shadow-xs"
+                            style={{ left: `${deadlineIndex * 48 + 24}px` }}
+                          ></div>
+                        )}
+
                         <div
                           onClick={() => setSelectedTask(task)}
                           className={`h-8 rounded-xl px-2.5 flex items-center justify-between text-xs font-medium cursor-pointer shadow-2xs transition transform hover:scale-[1.01] ${barColor}`}
@@ -771,26 +1173,24 @@ export const GanttTimelineView = ({
                           }}
                         >
                           <div className="truncate font-semibold text-[11px] flex items-center gap-1.5">
-                            {pos.clippedLeft && <span className="text-[10px] opacity-80">◀</span>}
                             {isUnavailable && <span>⚠️</span>}
                             <span className="truncate">{task.title}</span>
                           </div>
 
                           <div className="flex items-center gap-1.5 shrink-0 ml-2">
                             <span className="text-[9px] font-mono opacity-80 hidden sm:inline">
-                              {pos.tStart?.slice(5)} ➔ {pos.tDue?.slice(5)}
+                              {formatShortDate(pos.tStart)} ➔ {formatShortDate(pos.tDue)}
                             </span>
                             <span className="text-[10px] opacity-90 font-bold bg-black/20 px-1.5 py-0.5 rounded">
                               {isUnavailable ? 'LEAVE' : `${task.progress || 0}%`}
                             </span>
-                            {pos.clippedRight && <span className="text-[10px] opacity-80">▶</span>}
                           </div>
                         </div>
-                      )}
+                      </div>
                     </div>
-                  </div>
-                );
-              })
+                  );
+                })
+              )
             )}
           </div>
         </div>
@@ -819,23 +1219,29 @@ export const GanttTimelineView = ({
           {checkIsAssigneeUnavailable(selectedTask) && (
             <div className="mb-4 p-3.5 rounded-xl bg-rose-100 border border-rose-300 text-rose-900 text-xs flex items-center justify-between">
               <div>
-                <span className="font-bold block">
+                <span className="font-bold block text-sm mb-0.5">
                   🚨 Assigned developer ({selectedTask.assigneeName || selectedTask.assignee}) is currently ON LEAVE!
                 </span>
-                <span className="text-[11px] text-rose-700">
-                  {getUnavailabilityInfo(selectedTask)?.reason
-                    ? `Reason: ${getUnavailabilityInfo(selectedTask).reason}. `
-                    : ''}
-                  Go to "Uncertainty & Recovery Center" to simulate an EDUR minimal disruption schedule and reallocate this module safely.
+                <span className="text-xs text-rose-800">
+                  Leave Interval:{' '}
+                  <strong>
+                    {getUnavailabilityInfo(selectedTask)?.fromDate} ➔ {getUnavailabilityInfo(selectedTask)?.toDate}
+                  </strong>{' '}
+                  ({getUnavailabilityInfo(selectedTask)?.reason || 'Absence'}).
+                  <br />
+                  <strong className="text-emerald-900 font-bold">
+                    🔄 Scheduled Work Restart Date:{' '}
+                    {getWorkRestartDate(getUnavailabilityInfo(selectedTask)?.toDate)}
+                  </strong>
                 </span>
               </div>
-              <span className="px-2 py-1 rounded bg-rose-600 text-white font-bold text-[10px]">
+              <span className="px-2.5 py-1 rounded bg-rose-600 text-white font-bold text-[10px] shrink-0">
                 Red Alert
               </span>
             </div>
           )}
 
-          <div className="grid grid-cols-1 sm:grid-cols-5 gap-4 text-xs mb-4">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 text-xs mb-4">
             <div>
               <span className="text-slate-500 block mb-0.5">Assignee:</span>
               <strong className={checkIsAssigneeUnavailable(selectedTask) ? 'text-rose-700' : 'text-slate-800'}>
@@ -844,13 +1250,13 @@ export const GanttTimelineView = ({
             </div>
             <div>
               <span className="text-slate-500 block mb-0.5">Start Date:</span>
-              <strong className="text-slate-800 font-mono">
+              <strong className="text-emerald-700 font-mono font-bold">
                 {parseDateToIsoDay(selectedTask.startDate) || 'Auto-Scheduled'}
               </strong>
             </div>
             <div>
-              <span className="text-slate-500 block mb-0.5">Due Date:</span>
-              <strong className="text-slate-800 font-mono">
+              <span className="text-slate-500 block mb-0.5">End / Due Date:</span>
+              <strong className="text-blue-700 font-mono font-bold">
                 {parseDateToIsoDay(selectedTask.dueDate) || 'Not set'}
               </strong>
             </div>
