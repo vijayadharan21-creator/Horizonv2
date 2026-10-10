@@ -39,9 +39,17 @@ Follow strict software engineering best practices:
 - Provide realistic effort estimates in hours (typically 2h to 16h per task).
 - Assign appropriate priorities (Low, Medium, High, Critical).
 - Specify required technical skills.
-- Define explicit dependencies where a task relies on another task being completed first (e.g. API depends on Database).
+- CRITICALLY IMPORTANT — Define REAL dependency chains. In any software project tasks are NOT independent:
+  * Database schema/model tasks must come FIRST (no dependencies)
+  * Backend API tasks DEPEND ON database tasks
+  * Frontend UI tasks DEPEND ON backend API tasks
+  * Integration tasks DEPEND ON both frontend and backend
+  * Testing/QA tasks DEPEND ON the feature they test
+  * DevOps/Deployment tasks DEPEND ON all other tasks
+  Example chain: [DB Schema] → [Develop Login API] → [Integrate Login UI] → [Test Authentication]
 - DO NOT create self-dependencies.
-- DO NOT create circular dependencies.`;
+- DO NOT create circular dependencies.
+- Every non-foundational task MUST reference at least one dependency.`;
 
     const userPrompt = `Project Context:
 - Project Name: "${project.name}" (Key: ${project.key})
@@ -65,7 +73,13 @@ Generate a JSON object with a "tasks" array. Each task must have:
 - "priority": "Low", "Medium", "High", or "Critical"
 - "suggestedStartDate": optional ISO date or empty string
 - "suggestedDueDate": optional ISO date or empty string
-- "dependencies": array of other suggestionIds (e.g. ["SUGG-1"]) or existing task IDs (${existingTaskIds.join(', ') || 'none'})`;
+- "dependencies": array of other suggestionIds this task DEPENDS ON. Follow real engineering order:
+  Database tasks → no dependencies.
+  Backend tasks → depend on database tasks.
+  Frontend tasks → depend on backend tasks.
+  QA/Test tasks → depend on the task they test.
+  DevOps tasks → depend on all completed features.
+  Existing task IDs available: ${existingTaskIds.join(', ') || 'none'}.`;
 
     const result = await aiService.executeStructuredPrompt({
       systemPrompt,
@@ -241,7 +255,8 @@ Provide a JSON object with:
     const devContext = developers.map((d) => ({
       id: d._id.toString(),
       name: d.name,
-      skills: d.skills || [],
+      primarySkills: d.skills || [],
+      subSkills: d.subSkills || [],
     }));
 
     const todayStr = new Date().toISOString().split('T')[0];
@@ -254,12 +269,13 @@ Follow these critical software engineering principles:
 2. For each module, determine if it is INDEPENDENT (can start on day 1 with no prerequisites) or DEPENDENT (requires another module to complete first).
    - "isIndependent": true if dependencies is empty.
    - "dependencies": array of moduleIds (e.g. ["MOD-1"]). DO NOT create circular dependencies or self-dependencies.
+   - Follow real engineering order: Database → Backend APIs → Frontend → Integration → QA → DevOps.
 3. Realistic effort estimates: typically 6 to 36 hours per module.
 4. Safe timeline calculation:
    - Calculate critical path in days.
    - Add a 20-30% safe buffer (in days) to absorb risk.
    - Compute recommended deadline (assume project starts today: ${todayStr}).
-5. Match each module to the best available developer based on their skills from the provided team list. If none match, use "Unassigned".`;
+5. Match each module to the BEST available developer based on their "primarySkills" AND "subSkills" from the provided team list. Choose the developer whose skills best match the module's suggestedSkills. If none match at all, use "Unassigned".`;`;
 
     const userPrompt = `SRS Document Source: ${fileName || 'Uploaded SRS Document'}
 Content:
@@ -327,10 +343,21 @@ Return a JSON object with:
         (d) => d.name.toLowerCase() === mod.suggestedAssignee?.toLowerCase()
       );
       if (!matchedDev && developers.length > 0) {
-        matchedDev =
-          developers.find((d) =>
-            d.skills?.some((s) => mod.suggestedSkills?.includes(s))
-          ) || developers[idx % developers.length];
+        // Find best skill match using both primarySkills and subSkills
+        const allModSkills = (mod.suggestedSkills || []).map(s => s.toLowerCase());
+        let bestScore = -1;
+        for (const d of developers) {
+          const devAllSkills = [
+            ...(d.skills || []),
+            ...(d.subSkills || []),
+          ].map(s => s.toLowerCase());
+          const score = allModSkills.filter(ms =>
+            devAllSkills.some(ds => ds.includes(ms) || ms.includes(ds))
+          ).length;
+          if (score > bestScore) { bestScore = score; matchedDev = d; }
+        }
+        // If no skill match at all, round-robin
+        if (bestScore === 0) matchedDev = developers[idx % developers.length];
       }
 
       return {
@@ -546,7 +573,9 @@ Return a JSON object with:
     const todayStr = new Date().toISOString().split('T')[0];
 
     // 1. Resolve team members from assigned developers
-    const developers = await User.find({ role: 'developer' }).lean();
+    const developers = await User.find({ role: 'developer' })
+      .select('name email skills subSkills')
+      .lean();
     const assignedMemberIds = new Set();
 
     modules.forEach((mod) => {

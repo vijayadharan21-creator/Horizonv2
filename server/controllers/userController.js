@@ -43,7 +43,6 @@ export const updateProfile = async (req, res) => {
 
     if (name?.trim()) user.name = name.trim();
 
-    // Support both flat skills array and primary/secondary split
     if (Array.isArray(skills)) {
       user.skills = skills.filter(Boolean);
     } else if (primarySkills !== undefined || secondarySkills !== undefined) {
@@ -54,9 +53,26 @@ export const updateProfile = async (req, res) => {
       user.skills = allSkills;
     }
 
-    if (Array.isArray(subSkills)) {
-      user.subSkills = subSkills.filter(Boolean);
-    }
+    // Automatically derive and store subSkills based on the updated skills
+    const derivedSubSkills = [];
+    user.skills.forEach((s) => {
+      const lower = s.toLowerCase();
+      if (lower.includes('react') || lower.includes('frontend')) {
+        derivedSubSkills.push('React State Management', 'Component Architecture', 'Tailwind CSS', 'UI Optimization');
+      } else if (lower.includes('node') || lower.includes('backend')) {
+        derivedSubSkills.push('REST API Optimization', 'Express Middleware', 'Backend Architecture');
+      } else if (lower.includes('mongo') || lower.includes('database')) {
+        derivedSubSkills.push('MongoDB Schema Modeling', 'Query Optimization', 'Database Indexing');
+      } else if (lower.includes('python')) {
+        derivedSubSkills.push('Data Processing', 'API Integration', 'Script Automation');
+      } else if (lower.includes('plan') || lower.includes('agile')) {
+        derivedSubSkills.push('Sprint Architecture', 'Capacity Planning', 'Risk Mitigation');
+      } else {
+        derivedSubSkills.push(`${s} Optimization`, `${s} Architecture`);
+      }
+    });
+
+    user.subSkills = Array.from(new Set(derivedSubSkills));
 
     await user.save();
 

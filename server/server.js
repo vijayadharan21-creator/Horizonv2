@@ -11,8 +11,7 @@ import invitationRoutes from './router/invitationRoutes.js';
 import userRoutes from './router/userRoutes.js';
 import aiRoutes from './router/aiRoutes.js';
 import { validateAiConfig, getSafeAiStatus } from './config/ai.config.js';
-import { seedDefaultUsers } from './controllers/authController.js';
-import { seedDemoData } from './database/seed.js';
+// Seed imports removed — DB is source of truth. Use scripts/reset_and_seed.mjs to seed manually.
 
 // Load environment variables
 dotenv.config();
@@ -99,8 +98,6 @@ app.use((err, req, res, next) => {
 export const startServer = async () => {
   try {
     await connectDB();
-    await seedDefaultUsers();
-    await seedDemoData();
 
     app.listen(PORT, () => {
       console.log(`===============================================`);

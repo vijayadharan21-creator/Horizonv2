@@ -61,7 +61,7 @@ export const seedDefaultUsers = async () => {
  */
 export const register = async (req, res) => {
   try {
-    const { name, email, password, role } = req.body;
+    const { name, email, password, role, skills, subSkills } = req.body;
 
     if (!name || !email || !password) {
       return res.status(400).json({
@@ -74,6 +74,16 @@ export const register = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Password must be at least 6 characters.',
+      });
+    }
+
+    // Require at least one primary skill
+    const skillList    = Array.isArray(skills)    ? skills.filter(Boolean)    : [];
+    const subSkillList = Array.isArray(subSkills) ? subSkills.filter(Boolean) : [];
+    if (skillList.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please add at least one primary skill.',
       });
     }
 
@@ -90,10 +100,12 @@ export const register = async (req, res) => {
 
     // Create user — pre-save hook hashes the password
     const newUser = await User.create({
-      name: name.trim(),
-      email: sanitizedEmail,
+      name:      name.trim(),
+      email:     sanitizedEmail,
       password,
-      role: assignedRole,
+      role:      assignedRole,
+      skills:    skillList,
+      subSkills: subSkillList,
     });
 
     // Generate Dual Tokens

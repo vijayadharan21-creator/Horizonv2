@@ -11,6 +11,7 @@ import TaskAllocationView from '../components/views/TaskAllocationView';
 import AnalyticsView from '../components/views/AnalyticsView';
 import RecoveryCenterView from '../components/views/RecoveryCenterView';
 import ProfileView from '../components/views/ProfileView';
+import DependencyGraphView from '../components/views/DependencyGraphView';
 import { projectsApi, tasksApi } from '../api/index.js';
 import InviteTeamModal from '../components/InviteTeamModal.jsx';
 import TeamView from '../components/views/TeamView.jsx';
@@ -371,6 +372,10 @@ export const DeveloperDashboard = () => {
               isPM={isPM}
               onTriggerReplan={() => loadTasks()}
             />
+          )}
+
+          {currentTab === 'dependencies' && (
+            <DependencyGraphView tasks={tasks} />
           )}
 
           {currentTab === 'profile' && <ProfileView user={user} isPM={isPM} />}
