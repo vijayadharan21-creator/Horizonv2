@@ -309,7 +309,7 @@ export const getTaskAssistance = async (req, res) => {
   }
 };
 
-// ─── Feature 6: SRS Document Analysis & Project Template Generation ─────────
+// ─── Feature 6: SRS Document Analysis & Project Template Generation ───────
 
 export const analyzeSrs = async (req, res) => {
   try {
