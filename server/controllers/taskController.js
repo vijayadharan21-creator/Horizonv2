@@ -5,18 +5,31 @@ import User from '../models/User.js';
 // ─── Helper ───────────────────────────────────────────────────────────────────
 
 /**
- * Generate the next task ID for a project (e.g. T-106, T-107 ...)
- * Inspects all existing taskIds in MongoDB to guarantee global uniqueness against duplicates.
+ * Generate the next task ID atomically using a per-project counter.
+ * Uses MongoDB's atomic $inc to prevent duplicate IDs under concurrent requests.
+ * Falls back to scanning existing tasks to initialize the counter if it doesn't exist yet.
  */
 const getNextTaskId = async (projectId) => {
+  // Atomically increment and get the new counter value
+  const counter = await TaskCounter.findOneAndUpdate(
+    { projectId },
+    { $inc: { seq: 1 } },
+    { upsert: true, new: true }
+  );
+
+  const candidate = `T-${counter.seq}`;
+
+  // Guard against collision with pre-existing tasks (e.g. seeded demo data with IDs > 100)
+  const exists = await Task.findOne({ taskId: candidate }).lean();
+  if (!exists) return candidate;
+
+  // If collision, scan existing tasks to find the true maximum and reset counter
   const existingTasks = await Task.find({}, 'taskId').lean();
-  let maxSeq = 105;
+  let maxSeq = 100;
   for (const t of existingTasks) {
     if (t.taskId && t.taskId.startsWith('T-')) {
       const num = parseInt(t.taskId.replace('T-', ''), 10);
-      if (!isNaN(num) && num > maxSeq) {
-        maxSeq = num;
-      }
+      if (!isNaN(num) && num > maxSeq) maxSeq = num;
     }
   }
   const nextSeq = maxSeq + 1;
