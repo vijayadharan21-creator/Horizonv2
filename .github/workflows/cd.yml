@@ -37,8 +37,9 @@ jobs:
             echo "📁 Moving to project directory..."
             cd /home/ubuntu/Horizonv2
 
-            echo "⬇️  Pulling latest code from main..."
-            git pull origin main
+            echo "⬇️  Fetching and syncing latest code from origin/main..."
+            git fetch origin main
+            git reset --hard origin/main
 
             echo "🛑 Stopping existing containers..."
             sudo docker compose down --timeout 30 || true
