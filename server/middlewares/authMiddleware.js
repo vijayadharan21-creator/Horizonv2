@@ -2,7 +2,7 @@ import { verifyAccessToken } from '../utils/jwt.js';
 
 /**
  * Lightweight native cookie parser middleware
- * Ensures req.cookies is populated from cookie headers
+ * Ensures req.cookies is populated from cookie header
  */
 export const cookieParserMiddleware = (req, res, next) => {
   req.cookies = req.cookies || {};
