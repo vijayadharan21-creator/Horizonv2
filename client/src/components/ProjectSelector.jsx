@@ -146,56 +146,17 @@ export const ProjectSelector = ({
           {/* Add Project Footer — ONLY for Project Manager */}
           {isPM ? (
             <div className="p-2.5 border-t border-slate-100 bg-slate-50/60">
-              {!isAdding ? (
-                <div className="space-y-1.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsOpen(false);
-                      onOpenSrsModal?.();
-                    }}
-                    className="w-full flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 transition cursor-pointer shadow-xs"
-                  >
-                    <span>✨</span>
-                    <span>Upload SRS & AI Setup</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setIsAdding(true)}
-                    className="w-full flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg text-xs font-semibold text-slate-600 hover:text-slate-800 hover:bg-slate-100 transition cursor-pointer"
-                  >
-                    <span>+</span>
-                    <span>Quick Blank Project</span>
-                  </button>
-                </div>
-              ) : (
-                <form onSubmit={handleCreate} className="space-y-2">
-                  <input
-                    type="text"
-                    value={newProjectName}
-                    onChange={(e) => setNewProjectName(e.target.value)}
-                    placeholder="New project name..."
-                    autoFocus
-                    className="w-full bg-white border border-blue-300 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                  />
-                  <div className="flex items-center justify-end gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setIsAdding(false)}
-                      className="px-2.5 py-1 text-[11px] text-slate-500 hover:text-slate-800 cursor-pointer"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      className="px-2.5 py-1 text-[11px] bg-blue-600 hover:bg-blue-700 text-white rounded-md font-semibold cursor-pointer shadow-xs"
-                    >
-                      Add
-                    </button>
-                  </div>
-                </form>
-              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsOpen(false);
+                  onOpenSrsModal?.();
+                }}
+                className="w-full flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 transition cursor-pointer shadow-sm shadow-blue-500/20"
+              >
+                <span>✨</span>
+                <span>+ Create Project (Team & AI Setup)</span>
+              </button>
             </div>
           ) : null}
         </div>

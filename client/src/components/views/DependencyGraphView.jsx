@@ -23,21 +23,46 @@ const STATUS = {
 
 const pStyle  = (p) => PRIORITY[p]  || PRIORITY.Medium;
 const sStyle  = (s) => STATUS[s]    || STATUS.Pending;
-const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
+const fmtDate = (d) => {
+  if (!d) return '—';
+  try {
+    const parsed = new Date(d);
+    if (isNaN(parsed.getTime())) return String(d);
+    return parsed.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
+  } catch {
+    return String(d);
+  }
+};
 
 /* ─────────────────────── layout engine ────────────────────────────── */
 function buildLayout(tasks) {
   if (!tasks || tasks.length === 0)
     return { nodes: [], edges: [], W: 800, H: 500 };
 
-  // parent / children maps
-  const parents  = new Map(tasks.map(t => [t.taskId, []]));
-  const children = new Map(tasks.map(t => [t.taskId, []]));
+  const getCanonicalId = (t) => t.taskId || t.id || (t._id ? String(t._id) : `task-${Math.random()}`);
 
-  tasks.forEach(t => {
-    if (t.dependency && t.dependency !== 'None' && parents.has(t.taskId)) {
-      parents.get(t.taskId).push(t.dependency);
-      if (children.has(t.dependency)) children.get(t.dependency).push(t.taskId);
+  // Canonical task lookup
+  const taskById = new Map();
+  tasks.forEach((t) => {
+    const cid = getCanonicalId(t);
+    taskById.set(cid, t);
+    if (t.taskId) taskById.set(t.taskId, t);
+    if (t.id) taskById.set(t.id, t);
+    if (t._id) taskById.set(String(t._id), t);
+  });
+
+  // parent / children maps keyed by canonical ID
+  const parents = new Map(tasks.map((t) => [getCanonicalId(t), []]));
+  const children = new Map(tasks.map((t) => [getCanonicalId(t), []]));
+
+  tasks.forEach((t) => {
+    const tid = getCanonicalId(t);
+    if (t.dependency && t.dependency !== 'None') {
+      const depStr = String(t.dependency);
+      const parentTask = taskById.get(depStr);
+      const parentId = parentTask ? getCanonicalId(parentTask) : depStr;
+      if (parents.has(tid)) parents.get(tid).push(parentId);
+      if (children.has(parentId)) children.get(parentId).push(tid);
     }
   });
 
@@ -46,45 +71,60 @@ function buildLayout(tasks) {
   const getCol = (id) => {
     if (col.has(id)) return col.get(id);
     const ps = parents.get(id) || [];
-    const c  = ps.length === 0 ? 0 : Math.max(...ps.map(getCol)) + 1;
+    const c = ps.length === 0 ? 0 : Math.max(...ps.map(getCol)) + 1;
     col.set(id, c);
     return c;
   };
-  tasks.forEach(t => getCol(t.taskId));
+  tasks.forEach((t) => getCol(getCanonicalId(t)));
 
   // group by column
   const colBuckets = new Map();
-  tasks.forEach(t => {
-    const c = col.get(t.taskId) || 0;
+  tasks.forEach((t) => {
+    const tid = getCanonicalId(t);
+    const c = col.get(tid) || 0;
     if (!colBuckets.has(c)) colBuckets.set(c, []);
     colBuckets.get(c).push(t);
   });
 
   // assign x / y positions
   const pos = new Map();
-  [...colBuckets.entries()].sort((a,b) => a[0]-b[0]).forEach(([c, bucket]) => {
-    bucket.forEach((t, i) => {
-      pos.set(t.taskId, {
-        x: PAD + c * (NW + H_GAP),
-        y: PAD + i * (NH + V_GAP),
+  [...colBuckets.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .forEach(([c, bucket]) => {
+      bucket.forEach((t, i) => {
+        const tid = getCanonicalId(t);
+        pos.set(tid, {
+          x: PAD + c * (NW + H_GAP),
+          y: PAD + i * (NH + V_GAP),
+        });
       });
     });
-  });
 
-  const nodes = tasks.map(t => ({ task: t, ...pos.get(t.taskId) })).filter(n => n.x !== undefined);
-  const nodeMap = new Map(nodes.map(n => [n.task.taskId, n]));
+  const nodes = tasks
+    .map((t) => {
+      const tid = getCanonicalId(t);
+      return { task: t, cid: tid, ...pos.get(tid) };
+    })
+    .filter((n) => n.x !== undefined);
+
+  const nodeMap = new Map(nodes.map((n) => [n.cid, n]));
 
   // edges — source → target direction
   const edges = [];
-  nodes.forEach(n => {
+  nodes.forEach((n) => {
     if (n.task.dependency && n.task.dependency !== 'None') {
-      const src = nodeMap.get(n.task.dependency);
-      if (src) edges.push({ src, tgt: n });
+      const depStr = String(n.task.dependency);
+      const parentTask = taskById.get(depStr);
+      const parentId = parentTask ? getCanonicalId(parentTask) : depStr;
+      const src = nodeMap.get(parentId);
+      if (src && src.cid !== n.cid) {
+        edges.push({ src, tgt: n });
+      }
     }
   });
 
-  const W = Math.max(...nodes.map(n => n.x), 0) + NW + PAD;
-  const H = Math.max(...nodes.map(n => n.y), 0) + NH + PAD;
+  const W = Math.max(...nodes.map((n) => n.x), 0) + NW + PAD;
+  const H = Math.max(...nodes.map((n) => n.y), 0) + NH + PAD;
   return { nodes, edges, W: Math.max(W, 800), H: Math.max(H, 500) };
 }
 
@@ -243,8 +283,14 @@ export default function DependencyGraphView({ tasks }) {
             const d  = edgePath(e.src, e.tgt);
             const { mx, my } = edgeMidpoint(e.src, e.tgt);
 
-            const dev = e.tgt.task.assigneeName || e.src.task.assigneeName || '—';
-            const ts  = fmtDate(e.tgt.task.deadline || e.tgt.task.createdAt);
+            const dev =
+              e.tgt.task.assigneeName ||
+              (typeof e.tgt.task.assignee === 'string' ? e.tgt.task.assignee : e.tgt.task.assignee?.name) ||
+              e.src.task.assigneeName ||
+              '—';
+            const ts = fmtDate(
+              e.tgt.task.dueDate || e.tgt.task.deadline || e.tgt.task.createdAt || e.tgt.task.startDate
+            );
 
             // label box dims
             const LW = 130;

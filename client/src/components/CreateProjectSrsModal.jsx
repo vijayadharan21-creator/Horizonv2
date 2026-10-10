@@ -300,19 +300,26 @@ export const CreateProjectSrsModal = ({
         description: projectDescription.trim(),
         key: projectKey.trim().toUpperCase() || 'PROJ',
         deadline: safeDeadline,
-        modules: modules.map((m) => ({
-          moduleId: m.moduleId || m.id,
-          title: m.title,
-          description: m.description,
-          category: m.category,
-          isIndependent: m.isIndependent,
-          dependencies: m.dependencies,
-          dependency: m.dependencies?.[0] || null,
-          effortHours: Number(m.effortHours) || 8,
-          priority: m.priority || 'Medium',
-          assignee: m.assignee || 'Unassigned',
-          suggestedSkills: m.suggestedSkills || [],
-        })),
+        teamMemberIds: selectedTeam,
+        modules: modules.map((m) => {
+          const matchedMember = developers.find(
+            (d) => (d.id || d._id) === m.suggestedAssigneeId || d.name === m.assignee
+          );
+          return {
+            moduleId: m.moduleId || m.id,
+            title: m.title,
+            description: m.description,
+            category: m.category,
+            isIndependent: m.isIndependent,
+            dependencies: m.dependencies,
+            dependency: m.dependencies?.[0] || null,
+            effortHours: Number(m.effortHours) || 8,
+            priority: m.priority || 'Medium',
+            assignee: m.assignee || 'Unassigned',
+            assigneeId: matchedMember ? (matchedMember.id || matchedMember._id) : null,
+            suggestedSkills: m.suggestedSkills || [],
+          };
+        }),
       };
 
       const res = await projectsApi.createWithSrsTemplate(payload);
@@ -339,7 +346,7 @@ export const CreateProjectSrsModal = ({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-900/50 backdrop-blur-sm overflow-y-auto">
       <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl border border-slate-200 flex flex-col max-h-[92vh] overflow-hidden animate-in fade-in zoom-in-95 duration-150">
         {/* Header */}
-        <div className="px-6 py-4.5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50 shrink-0">
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50 shrink-0">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-blue-600 to-blue-800 text-white flex items-center justify-center font-bold shadow-md shadow-blue-500/20 text-lg">
               ✨
@@ -347,9 +354,9 @@ export const CreateProjectSrsModal = ({
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-base font-bold text-slate-900">
-                  {step === 'input'
-                    ? 'AI Project Setup from SRS Document'
-                    : 'AI Project Template & Work Allocation'}
+                  {step === 'team' ? 'Step 1 — Form Your Team'
+                    : step === 'input' ? 'Step 2 — SRS Document'
+                    : 'Step 3 — Review & Save'}
                 </h2>
                 {metaInfo?.provider && (
                   <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 border border-blue-200">
@@ -358,42 +365,203 @@ export const CreateProjectSrsModal = ({
                 )}
               </div>
               <p className="text-xs text-slate-500 mt-0.5">
-                {step === 'input'
-                  ? 'Upload Software Requirements Specification to extract modules, safe timeline, and work allocation.'
+                {step === 'team'
+                  ? 'Select the developers who will work on this project. The AI allocates tasks based only on their skills.'
+                  : step === 'input'
+                  ? 'Upload your SRS document. The AI will create tasks and assign them to your selected team.'
                   : 'Review and customize the AI-generated project template before saving to the database.'}
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
-            {step === 'template_review' && (
-              <button
-                type="button"
-                onClick={() => setStep('input')}
-                disabled={saving}
-                className="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition cursor-pointer"
-              >
-                ← Back to SRS
+            {step === 'input' && (
+              <button type="button" onClick={() => setStep('team')} disabled={analyzing}
+                className="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition cursor-pointer">
+                ← Team
               </button>
             )}
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={analyzing || saving}
-              className="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition cursor-pointer"
-            >
+            {step === 'template_review' && (
+              <button type="button" onClick={() => setStep('input')} disabled={saving}
+                className="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition cursor-pointer">
+                ← SRS
+              </button>
+            )}
+            <button type="button" onClick={onClose} disabled={analyzing || saving}
+              className="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition cursor-pointer">
               ✕
             </button>
           </div>
         </div>
 
+        {/* Step progress bar */}
+        <div className="px-6 py-2.5 border-b border-slate-100 bg-white shrink-0">
+          <div className="flex items-center gap-2">
+            {[
+              { key: 'team',            label: 'Form Team' },
+              { key: 'input',           label: 'SRS Document' },
+              { key: 'template_review', label: 'Review & Save' },
+            ].map((s, i) => {
+              const steps = ['team', 'input', 'template_review'];
+              const currentIdx = steps.indexOf(step);
+              const stepIdx    = steps.indexOf(s.key);
+              const done    = stepIdx < currentIdx;
+              const active  = stepIdx === currentIdx;
+              return (
+                <React.Fragment key={s.key}>
+                  <div className="flex items-center gap-1.5">
+                    <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold border-2 transition-all ${
+                      done   ? 'bg-blue-600 border-blue-600 text-white'
+                      : active ? 'border-blue-600 text-blue-600 bg-blue-50'
+                      : 'border-slate-200 text-slate-400 bg-white'
+                    }`}>{done ? '✓' : i + 1}</div>
+                    <span className={`text-[11px] font-semibold ${
+                      active ? 'text-blue-600' : done ? 'text-slate-600' : 'text-slate-400'
+                    }`}>{s.label}</span>
+                  </div>
+                  {i < 2 && <div className="flex-1 h-px bg-slate-200" />}
+                </React.Fragment>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Content Body */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
+
+          {/* ═══════════════════════════════════════════════════════════════════
+              STEP 0 — TEAM FORMATION (mandatory before AI analysis)
+          ═══════════════════════════════════════════════════════════════════ */}
+          {step === 'team' && (
+            <div className="space-y-5">
+              {/* Banner */}
+              <div className="flex items-start gap-3 p-4 bg-blue-50 border border-blue-200 rounded-2xl">
+                <div className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0 text-sm font-bold">👥</div>
+                <div>
+                  <p className="text-sm font-bold text-blue-900">Team formation is required before AI analysis</p>
+                  <p className="text-xs text-blue-700 mt-0.5">
+                    The AI agent allocates tasks exclusively to the developers you select here, matching their registered skills and sub-skills. Without a team, allocation is not possible.
+                  </p>
+                </div>
+              </div>
+
+              {/* Developer list */}
+              {loadingDevs ? (
+                <div className="flex items-center justify-center py-12 text-slate-400 text-sm gap-2">
+                  <div className="w-5 h-5 border-2 border-slate-200 border-t-blue-500 rounded-full animate-spin" />
+                  Loading available developers...
+                </div>
+              ) : developers.length === 0 ? (
+                <div className="py-10 text-center border-2 border-dashed border-slate-200 rounded-2xl bg-slate-50">
+                  <div className="text-3xl mb-2">🚫</div>
+                  <p className="text-sm font-semibold text-slate-600">No registered developers found.</p>
+                  <p className="text-xs text-slate-400 mt-1">Developers must register an account before you can form a team.</p>
+                </div>
+              ) : (
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                      Available Developers ({developers.length})
+                    </label>
+                    <div className="flex gap-2">
+                      <button type="button" onClick={() => setSelectedTeam(developers.map(d => d.id || d._id))}
+                        className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer">
+                        Select All
+                      </button>
+                      <span className="text-slate-300">|</span>
+                      <button type="button" onClick={() => setSelectedTeam([])}
+                        className="text-[11px] font-semibold text-slate-500 hover:text-slate-700 hover:underline cursor-pointer">
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {developers.map((dev, idx) => {
+                      const devId = dev.id || dev._id;
+                      const isSelected = selectedTeam.includes(devId);
+                      const colors = ['bg-violet-600','bg-blue-600','bg-emerald-600','bg-amber-600','bg-rose-600','bg-cyan-600'];
+                      const color = colors[idx % colors.length];
+                      return (
+                        <button
+                          key={devId}
+                          type="button"
+                          onClick={() => toggleDeveloper(devId)}
+                          className={`flex items-start gap-3 p-3.5 rounded-2xl border-2 text-left transition cursor-pointer ${
+                            isSelected
+                              ? 'border-blue-500 bg-blue-50 shadow-sm shadow-blue-100'
+                              : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+                          }`}
+                        >
+                          <div className={`w-9 h-9 rounded-xl ${color} text-white font-bold text-xs flex items-center justify-center shrink-0`}>
+                            {dev.name?.slice(0, 2).toUpperCase() || 'DE'}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-bold text-slate-900 truncate">{dev.name}</span>
+                              {isSelected && (
+                                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-blue-600 text-white shrink-0">✓ Selected</span>
+                              )}
+                            </div>
+                            <div className="text-[10px] text-slate-500 truncate">{dev.email}</div>
+                            {(dev.skills?.length > 0) && (
+                              <div className="flex flex-wrap gap-1 mt-1.5">
+                                {dev.skills.slice(0, 4).map(s => (
+                                  <span key={s} className="text-[9px] font-semibold bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-md">● {s}</span>
+                                ))}
+                                {(dev.subSkills?.length > 0) && dev.subSkills.slice(0, 2).map(s => (
+                                  <span key={s} className="text-[9px] font-medium bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded-md">{s}</span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Selected summary */}
+              {selectedTeam.length > 0 && (
+                <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 flex items-center gap-2">
+                  <span className="text-base">✅</span>
+                  <span><strong>{selectedTeam.length}</strong> developer{selectedTeam.length > 1 ? 's' : ''} selected — the AI will allocate tasks based on their combined skills.</span>
+                </div>
+              )}
+
+              {/* CTA */}
+              <div className="flex justify-end pt-2">
+                <button
+                  type="button"
+                  disabled={selectedTeam.length === 0}
+                  onClick={() => { setAnalyzeError(null); setStep('input'); }}
+                  className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl text-sm font-semibold shadow-sm shadow-blue-500/25 transition cursor-pointer flex items-center gap-2"
+                >
+                  <span>Continue to SRS Upload</span>
+                  <span>→</span>
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* ─────────────────────────────────────────────────────────────────
               STEP 1: UPLOAD / PASTE SRS DOCUMENT
           ───────────────────────────────────────────────────────────────── */}
           {step === 'input' && (
             <div className="space-y-6">
+
+              {/* Selected team reminder banner */}
+              <div className="flex items-center gap-3 p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+                <span className="text-emerald-600 font-bold text-sm">👥</span>
+                <span className="text-xs text-emerald-800">
+                  <strong>Team ({selectedTeam.length}):</strong>{' '}
+                  {developers.filter(d => selectedTeam.includes(d.id || d._id)).map(d => d.name).join(', ')}
+                </span>
+                <button type="button" onClick={() => setStep('team')}
+                  className="ml-auto text-[10px] font-semibold text-emerald-700 hover:underline cursor-pointer shrink-0">
+                  Change →
+                </button>
+              </div>
               {/* Document Dropzone */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-2">
@@ -787,8 +955,11 @@ export const CreateProjectSrsModal = ({
                               className="bg-transparent text-[11px] font-medium text-slate-800 hover:bg-slate-100 rounded px-1.5 py-1 cursor-pointer w-full"
                             >
                               <option value="Unassigned">Unassigned</option>
-                              {developers.map((dev) => (
-                                <option key={dev.id || dev.name} value={dev.name}>
+                              {(developers.filter((dev) => selectedTeam.includes(dev.id || dev._id)).length > 0
+                                ? developers.filter((dev) => selectedTeam.includes(dev.id || dev._id))
+                                : developers
+                              ).map((dev) => (
+                                <option key={dev.id || dev._id || dev.name} value={dev.name}>
                                   👤 {dev.name} {dev.skills?.length ? `(${dev.skills.slice(0, 2).join(', ')})` : ''}
                                 </option>
                               ))}

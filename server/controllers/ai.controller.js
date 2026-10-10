@@ -313,7 +313,7 @@ export const getTaskAssistance = async (req, res) => {
 
 export const analyzeSrs = async (req, res) => {
   try {
-    const { srsText, fileName } = req.body;
+    const { srsText, fileName, teamMemberIds } = req.body;
     if (!srsText || !srsText.trim()) {
       return res.status(400).json({
         success: false,
@@ -326,6 +326,7 @@ export const analyzeSrs = async (req, res) => {
       srsText: srsText.trim(),
       fileName: fileName || 'Uploaded Document',
       userId: req.user.id,
+      teamMemberIds: Array.isArray(teamMemberIds) ? teamMemberIds : [],
     });
 
     return res.status(200).json({

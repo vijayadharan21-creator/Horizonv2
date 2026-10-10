@@ -266,10 +266,10 @@ export const TopNav = ({
             type="button"
             onClick={onOpenSrsModal}
             className="h-9 flex items-center gap-1.5 px-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl text-xs font-semibold shadow-sm shadow-blue-500/25 transition cursor-pointer shrink-0"
-            title="Upload SRS document to analyze modules, safe timeline, and work allocation with AI"
+            title="Form team, upload SRS document, and generate project with AI task allocation"
           >
             <span>✨</span>
-            <span className="hidden sm:inline">SRS Setup</span>
+            <span className="hidden sm:inline">+ Create Project</span>
           </button>
         )}
 

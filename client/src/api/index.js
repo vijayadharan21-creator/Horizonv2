@@ -22,13 +22,14 @@ export const projectsApi = {
   },
 
   /** Create project initialized from AI SRS template */
-  createWithSrsTemplate: async ({ name, description, deadline, key, modules }) => {
+  createWithSrsTemplate: async ({ name, description, deadline, key, modules, teamMemberIds }) => {
     const response = await api.post('/api/projects/create-with-template', {
       name,
       description,
       deadline,
       key,
       modules,
+      teamMemberIds,
     });
     return response.data;
   },

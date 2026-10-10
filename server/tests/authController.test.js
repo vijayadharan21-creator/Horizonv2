@@ -81,6 +81,8 @@ describe('Unit Tests: Auth Controller', () => {
           name: 'Jane Doe',
           email: 'existing@taskforge.ai',
           password: 'Password123',
+          skills: ['JavaScript'],
+          subSkills: ['React'],
         },
       };
       const res = createMockRes();
@@ -100,7 +102,8 @@ describe('Unit Tests: Auth Controller', () => {
         name: userData.name,
         email: userData.email,
         role: userData.role,
-        skills: [],
+        skills: userData.skills || [],
+        subSkills: userData.subSkills || [],
         createdAt: new Date(),
         toSafeObject() {
           return {
@@ -109,6 +112,7 @@ describe('Unit Tests: Auth Controller', () => {
             email: this.email,
             role: this.role,
             skills: this.skills,
+            subSkills: this.subSkills,
             createdAt: this.createdAt,
           };
         },
@@ -121,6 +125,8 @@ describe('Unit Tests: Auth Controller', () => {
           email: 'alice@taskforge.ai',
           password: 'StrongPassword123',
           role: 'developer',
+          skills: ['Node.js'],
+          subSkills: ['Express'],
         },
       };
       const res = createMockRes();

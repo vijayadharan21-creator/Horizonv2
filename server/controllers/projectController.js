@@ -246,7 +246,7 @@ export const getProjectMembers = async (req, res) => {
  */
 export const createProjectWithTemplate = async (req, res) => {
   try {
-    const { name, description, deadline, key, modules } = req.body;
+    const { name, description, deadline, key, modules, teamMemberIds } = req.body;
     if (!name?.trim()) {
       return res.status(400).json({ success: false, message: 'Project name is required.' });
     }
@@ -260,6 +260,7 @@ export const createProjectWithTemplate = async (req, res) => {
       deadline,
       key,
       modules,
+      teamMemberIds: Array.isArray(teamMemberIds) ? teamMemberIds : [],
       userId: req.user.id,
     });
 

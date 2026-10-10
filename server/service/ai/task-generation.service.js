@@ -242,14 +242,22 @@ Provide a JSON object with:
    * - Identifying independent vs dependent modules (explicit dependencies)
    * - Intelligent work allocation to developers based on registered team skills
    */
-  async analyzeSrsDocument({ srsText, fileName, userId }) {
+  async analyzeSrsDocument({ srsText, fileName, userId, teamMemberIds = [] }) {
     if (!srsText || typeof srsText !== 'string' || !srsText.trim()) {
       throw new Error('SRS document text is required.');
     }
 
-    // 1. Fetch available developers from database to provide realistic assignment suggestions
-    const developers = await User.find({ role: 'developer' })
-      .select('name email skills')
+    // 1. Fetch available developers from database filtered by selected team if provided
+    const devQuery = { role: 'developer' };
+    if (Array.isArray(teamMemberIds) && teamMemberIds.length > 0) {
+      const validIds = teamMemberIds.filter((id) => mongoose.Types.ObjectId.isValid(id));
+      if (validIds.length > 0) {
+        devQuery._id = { $in: validIds };
+      }
+    }
+
+    const developers = await User.find(devQuery)
+      .select('name email skills subSkills')
       .lean();
 
     const devContext = developers.map((d) => ({
@@ -266,16 +274,26 @@ Your job is to read and analyze an uploaded Software Requirements Specification 
 
 Follow these critical software engineering principles:
 1. Decompose the document into 4 to 8 clear technical modules (Frontend, Backend, Database, Auth/Security, Integrations, Testing/QA, DevOps).
-2. For each module, determine if it is INDEPENDENT (can start on day 1 with no prerequisites) or DEPENDENT (requires another module to complete first).
-   - "isIndependent": true if dependencies is empty.
-   - "dependencies": array of moduleIds (e.g. ["MOD-1"]). DO NOT create circular dependencies or self-dependencies.
-   - Follow real engineering order: Database → Backend APIs → Frontend → Integration → QA → DevOps.
+2. REALISTIC DEPENDENCY MODELING:
+   - Real software architectures are NOT a collection of independent tasks.
+   - ONLY foundational root tasks (such as initial Database Schema Design or Architecture Scaffolding) can be "isIndependent": true with "dependencies": [].
+   - All subsequent functional modules MUST define their prerequisites in "dependencies": ["MOD-x"]. For example:
+     * Backend APIs / Auth Services depend on Database Schema Design (e.g. ["MOD-1"]).
+     * Frontend UI Components depend on Backend APIs (e.g. ["MOD-2"]).
+     * Payment & Integrations depend on Backend APIs / Auth.
+     * QA / Test Suites depend on Frontend UI & Backend APIs.
+     * DevOps / Deployments depend on QA Test Suites.
+   - For sequential feature flows (e.g., Develop Login API → Integrate Login UI → Test Authentication), each task MUST explicitly depend on its predecessor!
+   - NEVER return all modules as independent. Establish clear directed dependency edges.
 3. Realistic effort estimates: typically 6 to 36 hours per module.
 4. Safe timeline calculation:
    - Calculate critical path in days.
    - Add a 20-30% safe buffer (in days) to absorb risk.
    - Compute recommended deadline (assume project starts today: ${todayStr}).
-5. Match each module to the BEST available developer based on their "primarySkills" AND "subSkills" from the provided team list. Choose the developer whose skills best match the module's suggestedSkills. If none match at all, use "Unassigned".`;
+5. DEVELOPER ALLOCATION:
+   - You MUST assign tasks ONLY to developers from the provided team list.
+   - Match each module to the BEST developer based on their "primarySkills" AND "subSkills".
+   - If no developer is a perfect match, select the closest match from the team. Only use "Unassigned" if the team list is completely empty.`;
 
     const userPrompt = `SRS Document Source: ${fileName || 'Uploaded SRS Document'}
 Content:
@@ -331,33 +349,48 @@ Return a JSON object with:
       };
     }
 
-    // Post-process modules: ensure isIndependent matches dependencies array
+    // Safety check: If AI erroneously returned 0 dependencies across all modules, build realistic sequential DAG
+    const hasAnyDep = data.modules.some(
+      (m) => Array.isArray(m.dependencies) && m.dependencies.length > 0
+    );
+    if (!hasAnyDep && data.modules.length > 1) {
+      for (let i = 1; i < data.modules.length; i++) {
+        const prevId = data.modules[i - 1].moduleId || `MOD-${i}`;
+        data.modules[i].dependencies = [prevId];
+        data.modules[i].isIndependent = false;
+      }
+    }
+
+    // Post-process modules: ensure isIndependent matches dependencies array and assignees match team members
     data.modules = data.modules.map((mod, idx) => {
       const deps = Array.isArray(mod.dependencies)
         ? mod.dependencies.filter((d) => d && d !== mod.moduleId)
         : [];
       const isIndep = deps.length === 0;
 
-      // Ensure suggestedAssignee matches a real developer name if possible
+      // Ensure suggestedAssignee matches a developer from the selected team
       let matchedDev = developers.find(
         (d) => d.name.toLowerCase() === mod.suggestedAssignee?.toLowerCase()
       );
       if (!matchedDev && developers.length > 0) {
         // Find best skill match using both primarySkills and subSkills
-        const allModSkills = (mod.suggestedSkills || []).map(s => s.toLowerCase());
+        const allModSkills = (mod.suggestedSkills || []).map((s) => s.toLowerCase());
         let bestScore = -1;
         for (const d of developers) {
           const devAllSkills = [
             ...(d.skills || []),
             ...(d.subSkills || []),
-          ].map(s => s.toLowerCase());
-          const score = allModSkills.filter(ms =>
-            devAllSkills.some(ds => ds.includes(ms) || ms.includes(ds))
+          ].map((s) => s.toLowerCase());
+          const score = allModSkills.filter((ms) =>
+            devAllSkills.some((ds) => ds.includes(ms) || ms.includes(ds))
           ).length;
-          if (score > bestScore) { bestScore = score; matchedDev = d; }
+          if (score > bestScore) {
+            bestScore = score;
+            matchedDev = d;
+          }
         }
-        // If no skill match at all, round-robin
-        if (bestScore === 0) matchedDev = developers[idx % developers.length];
+        // If no skill match at all, round-robin among team members
+        if (bestScore <= 0) matchedDev = developers[idx % developers.length];
       }
 
       return {
@@ -493,10 +526,22 @@ Return a JSON object with:
         }
       }
 
-      // Developer matching
-      let matchedDev = developers.find((d) =>
-        d.skills?.some((s) => suggestedSkills.some((sk) => sk.toLowerCase().includes(s.toLowerCase())))
-      );
+      // Developer matching with both primarySkills and subSkills
+      let matchedDev = null;
+      let bestScore = -1;
+      for (const d of developers) {
+        const devAllSkills = [
+          ...(d.skills || []),
+          ...(d.subSkills || []),
+        ].map((s) => s.toLowerCase());
+        const score = suggestedSkills.filter((sk) =>
+          devAllSkills.some((ds) => ds.includes(sk.toLowerCase()) || sk.toLowerCase().includes(ds))
+        ).length;
+        if (score > bestScore) {
+          bestScore = score;
+          matchedDev = d;
+        }
+      }
       if (!matchedDev && developers.length > 0) {
         matchedDev = developers[idx % developers.length];
       }
@@ -516,6 +561,16 @@ Return a JSON object with:
         suggestedAssigneeId: matchedDev ? matchedDev._id.toString() : null,
       });
     });
+
+    // Realistic dependency enforcement: If no explicit 'depends on' was in text,
+    // establish directed software engineering sequence (e.g. Backend depends on DB, Frontend on Backend, QA on UI)
+    const hasAnyDep = modules.some((m) => m.dependencies.length > 0);
+    if (!hasAnyDep && modules.length > 1) {
+      for (let i = 1; i < modules.length; i++) {
+        modules[i].dependencies = [modules[i - 1].moduleId];
+        modules[i].isIndependent = false;
+      }
+    }
 
     // 5. Timeline & buffer metrics
     const totalEffortHours = modules.reduce((sum, m) => sum + m.effortHours, 0);
@@ -561,6 +616,7 @@ Return a JSON object with:
     deadline,
     key,
     modules,
+    teamMemberIds = [],
     userId,
   }) {
     if (!name?.trim()) {
@@ -572,11 +628,17 @@ Return a JSON object with:
 
     const todayStr = new Date().toISOString().split('T')[0];
 
-    // 1. Resolve team members from assigned developers
+    // 1. Resolve team members from assigned developers and explicitly selected team
     const developers = await User.find({ role: 'developer' })
       .select('name email skills subSkills')
       .lean();
     const assignedMemberIds = new Set();
+
+    if (Array.isArray(teamMemberIds)) {
+      teamMemberIds.forEach((id) => {
+        if (mongoose.Types.ObjectId.isValid(id)) assignedMemberIds.add(String(id));
+      });
+    }
 
     modules.forEach((mod) => {
       if (mod.assigneeId && mongoose.Types.ObjectId.isValid(mod.assigneeId)) {
@@ -644,12 +706,16 @@ Return a JSON object with:
 
       // Resolve dependency
       let resolvedDependency = null;
-      if (mod.dependency) {
+      if (mod.dependency && mod.dependency !== 'None') {
         resolvedDependency = moduleToTaskId.get(mod.dependency) || mod.dependency;
       } else if (Array.isArray(mod.dependencies) && mod.dependencies.length > 0) {
         const firstDep = mod.dependencies[0];
-        resolvedDependency = moduleToTaskId.get(firstDep) || firstDep;
+        if (firstDep && firstDep !== 'None') {
+          resolvedDependency = moduleToTaskId.get(firstDep) || firstDep;
+        }
       }
+
+      const hasDep = Boolean(resolvedDependency);
 
       // Resolve assignee
       let resolvedAssignee = null;
@@ -673,8 +739,8 @@ Return a JSON object with:
         title: mod.title.trim(),
         description: mod.description?.trim() || '',
         project: project._id,
-        group: mod.isIndependent ? 'In Progress' : 'To Do',
-        status: mod.isIndependent ? 'In Progress' : 'Pending',
+        group: hasDep ? 'To Do' : 'In Progress',
+        status: hasDep ? 'Pending' : 'In Progress',
         priority: mod.priority || 'Medium',
         assignee: resolvedAssignee,
         assigneeName: resolvedAssigneeName,
