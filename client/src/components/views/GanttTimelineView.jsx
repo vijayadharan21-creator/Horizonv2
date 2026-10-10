@@ -53,7 +53,7 @@ export const GanttTimelineView = ({
   const [projectMembers, setProjectMembers] = useState([]);
   const [dayOffset, setDayOffset] = useState(0);
   const [viewMode, setViewMode] = useState('project'); // 'project' (all tasks fit), 'sprint' (14d), 'month' (30d)
-  const [groupMode, setGroupMode] = useState('developer'); // 'developer' (swimlanes with leave/restart dates) or 'tasks' (flat list)
+  const [groupMode, setGroupMode] = useState('developer'); // 'developer' (swimlanes) or 'tasks' (flat list)
 
   const projectId = currentProject?.id || currentProject?._id;
 
@@ -76,12 +76,22 @@ export const GanttTimelineView = ({
     fetchUnavailabilities();
   }, [projectId, currentProject?.unavailabilities, tasks]);
 
+  // Lookup map for fast dependency cross-referencing
+  const taskMap = useMemo(() => {
+    const map = new Map();
+    tasks.forEach((t) => {
+      if (t.taskId) map.set(t.taskId, t);
+      if (t.id) map.set(t.id, t);
+      if (t._id) map.set(String(t._id), t);
+    });
+    return map;
+  }, [tasks]);
+
   // ── Calculate Dynamic Timeline Range Synchronized With Calendar & Project ──
   const {
     days,
     todayIndex,
     deadlineIndex,
-    projectStartDateStr,
     projectDeadlineStr,
     visibleStartStr,
     visibleEndStr,
@@ -169,7 +179,6 @@ export const GanttTimelineView = ({
         label: `${months[cur.getMonth()]} ${cur.getDate()}`,
         dayOfWeek: weekdays[cur.getDay()],
         dayNum: cur.getDate(),
-        monthName: months[cur.getMonth()],
         isToday: iso === todayIso,
         isDeadline: Boolean(projectDeadlineIso && iso === projectDeadlineIso),
         isWeekend: cur.getDay() === 0 || cur.getDay() === 6,
@@ -183,7 +192,6 @@ export const GanttTimelineView = ({
       days: computedDays,
       todayIndex: tIdx,
       deadlineIndex: dIdx,
-      projectStartDateStr: projectCreatedIso || computedDays[0]?.dateStr,
       projectDeadlineStr: projectDeadlineIso || 'Not Specified',
       visibleStartStr: computedDays[0]?.label || '',
       visibleEndStr: computedDays[computedDays.length - 1]?.label || '',
@@ -196,25 +204,17 @@ export const GanttTimelineView = ({
     const taskAssignee = task.assigneeName || task.assignee;
     if (!taskAssignee) return false;
 
-    const inProjectUnavail = unavailabilities.some(
+    return unavailabilities.some(
       (u) =>
         u.userName?.toLowerCase() === String(taskAssignee).toLowerCase() ||
         String(u.userId) === String(task.assignee)
     );
-    if (inProjectUnavail) return true;
-
-    const memberMatch = projectMembers.find(
-      (m) =>
-        m.name?.toLowerCase() === String(taskAssignee).toLowerCase() ||
-        String(m.id || m._id) === String(task.assignee)
-    );
-    return memberMatch?.availability?.status === 'unavailable';
   };
 
   const getUnavailabilityInfo = (taskOrAssignee) => {
     const assigneeStr = typeof taskOrAssignee === 'string'
       ? taskOrAssignee
-      : taskOrAssignee.assigneeName || taskOrAssignee.assignee;
+      : taskOrAssignee?.assigneeName || taskOrAssignee?.assignee;
 
     if (!assigneeStr) return null;
 
@@ -264,23 +264,11 @@ export const GanttTimelineView = ({
     const isCompletelyAfter = tStart > lastDay;
 
     if (isCompletelyBefore) {
-      return {
-        startCol: 1,
-        span: 1,
-        outOfRange: 'past',
-        tStart,
-        tDue,
-      };
+      return { startCol: 1, span: 1, outOfRange: 'past', tStart, tDue, durationDays: effortDays };
     }
 
     if (isCompletelyAfter) {
-      return {
-        startCol: days.length,
-        span: 1,
-        outOfRange: 'future',
-        tStart,
-        tDue,
-      };
+      return { startCol: days.length, span: 1, outOfRange: 'future', tStart, tDue, durationDays: effortDays };
     }
 
     const clampedStart = tStart < firstDay ? firstDay : tStart;
@@ -301,6 +289,7 @@ export const GanttTimelineView = ({
       clippedRight: tDue > lastDay,
       tStart,
       tDue,
+      durationDays: effortDays,
     };
   };
 
@@ -315,7 +304,7 @@ export const GanttTimelineView = ({
     const restartDate = getWorkRestartDate(lEnd);
 
     if (lEnd < firstDay || lStart > lastDay) {
-      return null; // Not visible in current window
+      return null;
     }
 
     const clampedStart = lStart < firstDay ? firstDay : lStart;
@@ -327,7 +316,6 @@ export const GanttTimelineView = ({
     const startCol = sIdx !== -1 ? sIdx + 1 : 1;
     const endCol = eIdx !== -1 ? eIdx + 1 : days.length;
 
-    // Also calculate restart column if inside window
     let restartCol = -1;
     if (restartDate) {
       const rIdx = days.findIndex((d) => d.dateStr === restartDate);
@@ -344,9 +332,8 @@ export const GanttTimelineView = ({
     };
   };
 
-  const getBarColor = (task, isAssigneeUnavailable) => {
-    // CRITICAL: Highlight in RED if assignee is on leave / unavailable
-    if (isAssigneeUnavailable) {
+  const getBarColor = (task, isAssigneeUnavailable, isOverlappingLeave) => {
+    if (isOverlappingLeave || isAssigneeUnavailable) {
       return 'bg-rose-600 hover:bg-rose-700 text-white border-rose-700 shadow-sm ring-2 ring-rose-400';
     }
 
@@ -372,20 +359,19 @@ export const GanttTimelineView = ({
   const developerLanes = useMemo(() => {
     const devMap = new Map();
 
-    // 1. Initialize from project members
+    // Initialize from project members
     projectMembers.forEach((m) => {
       const devId = String(m.id || m._id);
       devMap.set(devId, {
         id: devId,
         name: m.name || 'Team Member',
         role: m.role || 'Developer',
-        subSkills: m.subSkills || m.skills || [],
         tasks: [],
         unavailability: null,
       });
     });
 
-    // 2. Attach unavailabilities
+    // Attach unavailabilities
     unavailabilities.forEach((u) => {
       let matched = null;
       for (const [id, dev] of devMap.entries()) {
@@ -405,14 +391,13 @@ export const GanttTimelineView = ({
           id: fallbackId,
           name: u.userName,
           role: 'Developer',
-          subSkills: [],
           tasks: [],
           unavailability: u,
         });
       }
     });
 
-    // 3. Assign tasks to each developer lane
+    // Assign tasks to each developer lane
     tasks.forEach((t) => {
       const tAssigneeName = t.assigneeName || '';
       const tAssigneeId = String(t.assignee || '');
@@ -437,7 +422,6 @@ export const GanttTimelineView = ({
             id: fallbackId,
             name: tAssigneeName || 'Unassigned',
             role: 'Team Member',
-            subSkills: [],
             tasks: [],
             unavailability: null,
           });
@@ -446,7 +430,6 @@ export const GanttTimelineView = ({
       }
     });
 
-    // Filter by assignee filter if chosen
     let result = Array.from(devMap.values());
     if (assigneeFilter !== 'All') {
       result = result.filter(
@@ -463,205 +446,54 @@ export const GanttTimelineView = ({
   });
 
   return (
-    <div className="p-5 sm:p-7 space-y-6 max-w-7xl mx-auto animate-in fade-in duration-150">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-slate-100">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
-              Timeline & Schedule
-            </h1>
-            {unavailabilities.length > 0 && (
-              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200 flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-rose-600 animate-ping"></span>
-                <span>{unavailabilities.length} Member(s) on Leave (Red Alert)</span>
+    <div className="p-4 sm:p-6 space-y-4 max-w-7xl mx-auto animate-in fade-in duration-150">
+      {/* ─── SLEEK UNIFIED TOOLBAR (REPLACES CLUTTERED DOUBLE BANNERS) ─── */}
+      <div className="bg-white border border-slate-200 rounded-2xl p-3.5 sm:p-4 shadow-2xs flex flex-wrap items-center justify-between gap-4">
+        {/* Left: Project identity & Milestone */}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-xl">📊</span>
+            <div>
+              <h1 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight leading-tight">
+                {currentProject?.name || 'Project'} Timeline
+              </h1>
+              <span className="text-[11px] text-slate-500 font-medium">
+                {tasks.length} tasks • {totalEffortHours}h total
               </span>
-            )}
-          </div>
-          <p className="text-xs sm:text-sm text-slate-500 mt-1">
-            Gantt schedule synchronized with developer leave intervals, work restart dates, and exact module durations.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-3">
-          {/* Grouping Toggle: Developer Swimlanes vs Flat Task List */}
-          <div className="flex items-center bg-slate-100 p-1 rounded-xl text-xs font-semibold">
-            <button
-              type="button"
-              onClick={() => setGroupMode('developer')}
-              className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
-                groupMode === 'developer'
-                  ? 'bg-white text-indigo-700 shadow-xs'
-                  : 'text-slate-500 hover:text-slate-900'
-              }`}
-            >
-              <span>👥</span>
-              <span>By Developer</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setGroupMode('tasks')}
-              className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
-                groupMode === 'tasks'
-                  ? 'bg-white text-indigo-700 shadow-xs'
-                  : 'text-slate-500 hover:text-slate-900'
-              }`}
-            >
-              <span>📋</span>
-              <span>All Tasks</span>
-            </button>
-          </div>
-
-          {/* Assignee Filter */}
-          <select
-            value={assigneeFilter}
-            onChange={(e) => setAssigneeFilter(e.target.value)}
-            className="px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 shadow-2xs focus:outline-none focus:border-blue-500 cursor-pointer"
-          >
-            <option value="All">All Assignees ({tasks.length} tasks)</option>
-            {uniqueAssignees.map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      {/* ─── DEVELOPER LEAVE & RESTART WORK TRACKER BANNER ──────────────────── */}
-      {unavailabilities.length > 0 && (
-        <div className="bg-gradient-to-r from-rose-900 via-rose-800 to-slate-900 text-white rounded-2xl p-4 shadow-sm border border-rose-700/60 space-y-3">
-          <div className="flex items-center justify-between pb-2 border-b border-rose-700/40">
-            <div className="flex items-center gap-2">
-              <span className="text-xl">🌴</span>
-              <h3 className="font-bold text-sm text-white">
-                Developer Leave & Work Restart Schedule
-              </h3>
             </div>
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500/30 text-rose-200 border border-rose-400/40">
-              Deterministic Recovery Available in Uncertainty Center
-            </span>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {unavailabilities.map((u, idx) => {
-              const restartDate = getWorkRestartDate(u.toDate);
-              return (
-                <div
-                  key={idx}
-                  className="bg-black/30 backdrop-blur-xs p-3 rounded-xl border border-white/10 space-y-2 text-xs"
-                >
-                  <div className="flex items-center justify-between">
-                    <strong className="text-white text-sm font-bold flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-rose-400 animate-ping"></span>
-                      <span>{u.userName}</span>
-                    </strong>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-500 text-white">
-                      {u.reason || 'Leave'}
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2 text-[11px] pt-1">
-                    <div className="bg-rose-950/60 p-2 rounded-lg border border-rose-500/30">
-                      <span className="text-rose-300 block text-[9px] uppercase font-bold">Leave Window</span>
-                      <strong className="text-white font-mono text-xs block">
-                        {formatShortDate(u.fromDate)} ➔ {formatShortDate(u.toDate)}
-                      </strong>
-                    </div>
-
-                    <div className="bg-emerald-950/70 p-2 rounded-lg border border-emerald-500/30">
-                      <span className="text-emerald-300 block text-[9px] uppercase font-bold flex items-center gap-1">
-                        <span>🔄</span>
-                        <span>Restarts Work</span>
-                      </span>
-                      <strong className="text-emerald-200 font-mono text-xs block">
-                        {restartDate ? formatShortDate(restartDate) : 'Next Day'}
-                      </strong>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* ─── PROJECT SYNCHRONIZATION & DATE CONTROLS BANNER ─────────────────── */}
-      <div className="bg-slate-900 text-white rounded-2xl p-4 shadow-sm border border-slate-800 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex flex-wrap items-center gap-6 text-xs">
-          <div>
-            <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">
-              Project Name
-            </span>
-            <strong className="text-white text-sm font-bold truncate max-w-xs block">
-              {currentProject?.name || 'TaskForge Project'}
-            </strong>
+          {/* Project Deadline Pill */}
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-semibold">
+            <span>🎯 Deadline:</span>
+            <span className="font-mono text-amber-950 font-bold">{projectDeadlineStr}</span>
           </div>
 
-          <div className="border-l border-slate-800 pl-4">
-            <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">
-              Today's Date
-            </span>
-            <strong className="text-blue-300 font-mono flex items-center gap-1">
-              <span>📅</span>
+          {/* Absent Member Alert Badge */}
+          {unavailabilities.length > 0 && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 text-xs font-semibold">
+              <span className="w-1.5 h-1.5 rounded-full bg-rose-600 animate-ping"></span>
               <span>
-                {new Date().toLocaleDateString('en-US', {
-                  weekday: 'short',
-                  month: 'short',
-                  day: 'numeric',
-                  year: 'numeric',
-                })}
+                {unavailabilities.length} Member on Leave (Restarts {getWorkRestartDate(unavailabilities[0]?.toDate)})
               </span>
-            </strong>
-          </div>
-
-          <div className="border-l border-slate-800 pl-4">
-            <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">
-              Project Milestone Deadline
-            </span>
-            <strong
-              className={`font-mono flex items-center gap-1.5 ${
-                projectDeadlineStr !== 'Not Specified' ? 'text-amber-300' : 'text-slate-400 italic'
-              }`}
-            >
-              <span>🎯</span>
-              <span>{projectDeadlineStr}</span>
-            </strong>
-          </div>
-
-          <div className="border-l border-slate-800 pl-4">
-            <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">
-              Visible Timeline
-            </span>
-            <span className="text-slate-200 font-mono text-[11px]">
-              {visibleStartStr} ➔ {visibleEndStr} ({days.length} Days)
-            </span>
-          </div>
-
-          <div className="border-l border-slate-800 pl-4">
-            <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">
-              Total Workload
-            </span>
-            <span className="text-emerald-300 font-mono text-[11px] font-bold">
-              {totalEffortHours}h ({tasks.length} Modules)
-            </span>
-          </div>
+            </div>
+          )}
         </div>
 
-        {/* View Mode & Time Panning Controls */}
+        {/* Center: Range presets & Week navigation */}
         <div className="flex items-center gap-2">
-          <div className="flex items-center bg-slate-800 rounded-xl p-0.5 border border-slate-700 text-xs">
+          <div className="flex items-center bg-slate-100 p-0.5 rounded-xl text-xs font-semibold text-slate-600">
             <button
               type="button"
               onClick={() => {
                 setViewMode('project');
                 setDayOffset(0);
               }}
-              className={`px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer ${
-                viewMode === 'project' ? 'bg-indigo-600 text-white shadow-2xs' : 'text-slate-400 hover:text-white'
+              className={`px-3 py-1 rounded-lg transition cursor-pointer ${
+                viewMode === 'project' ? 'bg-white text-indigo-700 shadow-2xs font-bold' : 'hover:text-slate-900'
               }`}
             >
-              Project Fit
+              Fit Project
             </button>
             <button
               type="button"
@@ -669,8 +501,8 @@ export const GanttTimelineView = ({
                 setViewMode('sprint');
                 setDayOffset(0);
               }}
-              className={`px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer ${
-                viewMode === 'sprint' ? 'bg-indigo-600 text-white shadow-2xs' : 'text-slate-400 hover:text-white'
+              className={`px-3 py-1 rounded-lg transition cursor-pointer ${
+                viewMode === 'sprint' ? 'bg-white text-indigo-700 shadow-2xs font-bold' : 'hover:text-slate-900'
               }`}
             >
               2-Wk Sprint
@@ -681,8 +513,8 @@ export const GanttTimelineView = ({
                 setViewMode('month');
                 setDayOffset(0);
               }}
-              className={`px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer ${
-                viewMode === 'month' ? 'bg-indigo-600 text-white shadow-2xs' : 'text-slate-400 hover:text-white'
+              className={`px-3 py-1 rounded-lg transition cursor-pointer ${
+                viewMode === 'month' ? 'bg-white text-indigo-700 shadow-2xs font-bold' : 'hover:text-slate-900'
               }`}
             >
               Month (30d)
@@ -693,82 +525,114 @@ export const GanttTimelineView = ({
             <button
               type="button"
               onClick={() => setDayOffset((prev) => prev - 7)}
-              className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition cursor-pointer"
+              className="px-2 py-1 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-lg text-xs font-bold border border-slate-200 transition cursor-pointer"
               title="Previous Week"
             >
-              ◀ -7d
+              ◀
             </button>
             <button
               type="button"
               onClick={() => setDayOffset(0)}
-              className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition cursor-pointer"
-              title="Reset to Current Date"
+              className="px-2.5 py-1 bg-slate-50 hover:bg-slate-100 text-slate-700 rounded-lg text-xs font-bold border border-slate-200 transition cursor-pointer"
             >
               Today
             </button>
             <button
               type="button"
               onClick={() => setDayOffset((prev) => prev + 7)}
-              className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition cursor-pointer"
+              className="px-2 py-1 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-lg text-xs font-bold border border-slate-200 transition cursor-pointer"
               title="Next Week"
             >
-              +7d ▶
+              ▶
             </button>
           </div>
         </div>
+
+        {/* Right: View mode toggle & Assignee filter */}
+        <div className="flex items-center gap-2">
+          <div className="flex items-center bg-slate-100 p-0.5 rounded-xl text-xs font-semibold">
+            <button
+              type="button"
+              onClick={() => setGroupMode('developer')}
+              className={`px-2.5 py-1 rounded-lg transition cursor-pointer flex items-center gap-1 ${
+                groupMode === 'developer' ? 'bg-white text-indigo-700 shadow-2xs font-bold' : 'text-slate-500 hover:text-slate-900'
+              }`}
+            >
+              <span>👥</span>
+              <span>By Developer</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setGroupMode('tasks')}
+              className={`px-2.5 py-1 rounded-lg transition cursor-pointer flex items-center gap-1 ${
+                groupMode === 'tasks' ? 'bg-white text-indigo-700 shadow-2xs font-bold' : 'text-slate-500 hover:text-slate-900'
+              }`}
+            >
+              <span>📋</span>
+              <span>All Tasks</span>
+            </button>
+          </div>
+
+          <select
+            value={assigneeFilter}
+            onChange={(e) => setAssigneeFilter(e.target.value)}
+            className="px-2.5 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 shadow-2xs focus:outline-none focus:border-indigo-500 cursor-pointer"
+          >
+            <option value="All">All Assignees</option>
+            {uniqueAssignees.map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
-      {/* ─── UNIFIED GANTT CHART (STICKY TASK COLUMN + SYNCHRONIZED CALENDAR GRID) ─── */}
-      <div className="bg-white border border-slate-200/90 rounded-2xl shadow-xs overflow-hidden">
-        {/* Legend */}
-        <div className="flex flex-wrap items-center justify-between px-6 py-3 border-b border-slate-100 bg-slate-50/70 text-xs">
-          <div className="flex flex-wrap items-center gap-4">
-            <span className="text-slate-500 font-semibold">Status Legend:</span>
+      {/* ─── GANTT TIMELINE CONTAINER ─── */}
+      <div className="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
+        {/* Subtle Legend Bar */}
+        <div className="flex flex-wrap items-center justify-between px-5 py-2.5 border-b border-slate-100 bg-slate-50/70 text-xs">
+          <div className="flex flex-wrap items-center gap-4 text-[11px]">
+            <span className="text-slate-400 font-semibold uppercase tracking-wider text-[10px]">Legend:</span>
             <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-600"></span>
+              <span className="w-2 h-2 rounded-full bg-emerald-600"></span>
               <span className="text-slate-600 font-medium">Completed</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-blue-600"></span>
+              <span className="w-2 h-2 rounded-full bg-blue-600"></span>
               <span className="text-slate-600 font-medium">In Progress</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-slate-400"></span>
-              <span className="text-slate-600 font-medium">To Do / Pending</span>
+              <span className="w-2 h-2 rounded-full bg-slate-400"></span>
+              <span className="text-slate-600 font-medium">To Do</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-rose-600 ring-2 ring-rose-300 animate-pulse"></span>
-              <span className="text-rose-700 font-bold">On Leave / Conflict</span>
+              <span className="w-2 h-2 rounded-full bg-rose-600 ring-2 ring-rose-300"></span>
+              <span className="text-rose-700 font-bold">Leave Conflict</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-sm bg-emerald-600"></span>
-              <span className="text-emerald-700 font-bold">Work Restarts Date</span>
+              <span className="w-2 h-2 rounded-sm bg-emerald-600"></span>
+              <span className="text-emerald-700 font-bold">Work Resumes</span>
             </div>
-            {deadlineIndex !== -1 && (
-              <div className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-sm bg-red-600"></span>
-                <span className="text-red-700 font-bold">Milestone Deadline</span>
-              </div>
-            )}
           </div>
 
-          <div className="text-slate-400 text-[11px] flex items-center gap-1">
-            <span>💡 Click any task bar to inspect start/end dates, dependencies, and absence impacts</span>
-          </div>
+          <span className="text-slate-400 text-[11px]">
+            Scope: <strong className="text-slate-700 font-mono">{visibleStartStr} ➔ {visibleEndStr}</strong>
+          </span>
         </div>
 
-        {/* Unified Scroll Container */}
+        {/* Scrollable Timeline Grid */}
         <div className="overflow-x-auto">
           <div className="min-w-max flex flex-col divide-y divide-slate-100">
             {/* Header Row */}
             <div className="flex bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600 select-none">
-              {/* Sticky Task Header */}
-              <div className="w-96 min-w-[24rem] sticky left-0 z-30 bg-slate-50 border-r border-slate-200 px-4 py-3 flex items-center justify-between shadow-2xs">
-                <span>{groupMode === 'developer' ? 'Developer & Assigned Modules' : 'Task & Assignee'}</span>
-                <span className="text-[10px] text-slate-400 font-mono">START ➔ END DATES</span>
+              {/* Sticky Column Header (compact w-80) */}
+              <div className="w-80 min-w-[20rem] sticky left-0 z-30 bg-slate-50 border-r border-slate-200 px-4 py-2.5 flex items-center justify-between shadow-2xs">
+                <span>{groupMode === 'developer' ? 'Developer / Task' : 'Task & Assignee'}</span>
+                <span className="text-[10px] text-slate-400 font-mono">EFFORT</span>
               </div>
 
-              {/* Day Headers Grid */}
+              {/* Day Columns Header */}
               <div
                 className="grid"
                 style={{ gridTemplateColumns: `repeat(${days.length}, 48px)` }}
@@ -806,12 +670,10 @@ export const GanttTimelineView = ({
               </div>
             </div>
 
-            {/* ─── MODE A: GROUP BY DEVELOPER (SWIMLANES WITH LEAVE & RESTART DATES) ─── */}
+            {/* ─── GROUP BY DEVELOPER (SWIMLANES) ─── */}
             {groupMode === 'developer' ? (
               developerLanes.length === 0 ? (
-                <div className="p-12 text-center text-slate-400 text-xs">
-                  No developers found in this project.
-                </div>
+                <div className="p-12 text-center text-slate-400 text-xs">No developers in project.</div>
               ) : (
                 developerLanes.map((dev) => {
                   const unavail = dev.unavailability;
@@ -820,85 +682,67 @@ export const GanttTimelineView = ({
                   const devTotalHours = dev.tasks.reduce((sum, t) => sum + (t.effortHours || 0), 0);
 
                   return (
-                    <div key={dev.id} className="divide-y divide-slate-100/70">
-                      {/* Developer Lane Header Row */}
-                      <div className="flex items-center bg-slate-100/80 border-y border-slate-200 py-2.5">
-                        {/* Sticky Developer Info Header */}
-                        <div className="w-96 min-w-[24rem] sticky left-0 z-25 bg-slate-100/95 border-r border-slate-200 px-4 flex items-center justify-between">
-                          <div className="flex items-center gap-2.5">
-                            <div className="w-7 h-7 rounded-full bg-indigo-600 text-white font-bold flex items-center justify-center text-xs shadow-2xs">
+                    <div key={dev.id} className="divide-y divide-slate-100/60">
+                      {/* Swimlane Header Row */}
+                      <div className="flex items-center bg-slate-50/80 border-y border-slate-200/80 py-2">
+                        {/* Sticky Developer Info */}
+                        <div className="w-80 min-w-[20rem] sticky left-0 z-25 bg-slate-50/95 border-r border-slate-200 px-4 flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div className="w-6 h-6 rounded-full bg-indigo-600 text-white font-bold flex items-center justify-center text-[10px] shadow-2xs">
                               {dev.name.charAt(0).toUpperCase()}
                             </div>
-                            <div>
-                              <strong className="text-slate-900 text-xs font-bold block">
+                            <div className="truncate">
+                              <strong className="text-slate-800 text-xs font-bold block truncate">
                                 {dev.name}
                               </strong>
-                              <span className="text-[10px] text-slate-500 font-medium">
-                                {dev.role} • {dev.tasks.length} task(s) • {devTotalHours}h
+                              <span className="text-[10px] text-slate-400">
+                                {dev.role} • {dev.tasks.length} task(s)
                               </span>
                             </div>
                           </div>
 
                           {unavail ? (
-                            <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-rose-100 text-rose-800 border border-rose-300">
+                            <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
                               ON LEAVE
                             </span>
                           ) : (
-                            <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
-                              AVAILABLE
+                            <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              ACTIVE
                             </span>
                           )}
                         </div>
 
-                        {/* Developer Status Description across grid */}
+                        {/* Swimlane Status Tag */}
                         <div className="px-4 text-xs">
                           {unavail ? (
-                            <div className="flex flex-wrap items-center gap-3 text-[11px]">
-                              <span className="font-bold text-rose-800 flex items-center gap-1">
-                                <span>🚨 Leaves On:</span>
-                                <span className="font-mono bg-rose-200/80 px-1.5 py-0.5 rounded text-rose-900 font-bold">
-                                  {unavail.fromDate}
-                                </span>
-                                <span>➔ Returns:</span>
-                                <span className="font-mono bg-rose-200/80 px-1.5 py-0.5 rounded text-rose-900 font-bold">
-                                  {unavail.toDate}
-                                </span>
+                            <div className="flex items-center gap-2 text-[11px]">
+                              <span className="text-rose-700 font-semibold">
+                                🌴 Leave: <strong>{formatShortDate(unavail.fromDate)} ➔ {formatShortDate(unavail.toDate)}</strong>
                               </span>
-
-                              <span className="font-bold text-emerald-800 flex items-center gap-1 bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-300">
-                                <span>🔄 Restarts Work On:</span>
-                                <span className="font-mono text-emerald-950 font-extrabold underline">
-                                  {restartDate || 'Day After'}
-                                </span>
+                              <span className="text-slate-300">•</span>
+                              <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
+                                🔄 Restarts: {formatShortDate(restartDate)}
                               </span>
-
-                              <span className="text-slate-500 italic text-[10px]">
-                                ({unavail.reason || 'Leave'})
-                              </span>
+                              <span className="text-slate-400 italic text-[10px]">({unavail.reason || 'Leave'})</span>
                             </div>
                           ) : (
-                            <span className="text-[11px] text-emerald-700 font-medium flex items-center gap-1">
-                              <span>✓</span>
-                              <span>Active full capacity across sprint</span>
+                            <span className="text-[11px] text-slate-500">
+                              Full sprint capacity ({devTotalHours}h total)
                             </span>
                           )}
                         </div>
                       </div>
 
-                      {/* Developer's Leave Interval Bar (if absent) */}
+                      {/* Developer Leave Band on Calendar */}
                       {unavail && leavePos && (
-                        <div className="flex items-center text-xs py-1.5 bg-rose-50/50">
-                          <div className="w-96 min-w-[24rem] sticky left-0 z-20 bg-rose-50/95 border-r border-rose-200 px-4 py-1 flex items-center justify-between text-[11px]">
-                            <div className="flex items-center gap-1.5 text-rose-900 font-bold">
-                              <span>🚫</span>
-                              <span>Absence Interval:</span>
-                              <span className="font-mono text-[10px] text-rose-700">
-                                {unavail.fromDate} ➔ {unavail.toDate}
-                              </span>
-                            </div>
-                            <div className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-300">
-                              Restart: {restartDate}
-                            </div>
+                        <div className="flex items-center text-xs py-1 bg-rose-50/40">
+                          <div className="w-80 min-w-[20rem] sticky left-0 z-20 bg-rose-50/95 border-r border-rose-200 px-4 py-0.5 flex items-center justify-between text-[11px]">
+                            <span className="text-rose-800 font-semibold text-[10px]">
+                              🚫 Absence Interval
+                            </span>
+                            <span className="text-emerald-700 font-bold text-[10px] bg-white px-1.5 py-0.2 rounded border border-emerald-200">
+                              Resumes {formatShortDate(restartDate)}
+                            </span>
                           </div>
 
                           <div
@@ -906,46 +750,39 @@ export const GanttTimelineView = ({
                             style={{ gridTemplateColumns: `repeat(${days.length}, 48px)` }}
                           >
                             <div
-                              className="h-6 rounded-lg px-2 flex items-center justify-between text-[10px] font-bold bg-rose-600 text-white shadow-2xs"
+                              className="h-5 rounded-md px-2 flex items-center justify-between text-[9px] font-bold bg-rose-600 text-white shadow-2xs"
                               style={{
                                 gridColumnStart: leavePos.startCol,
                                 gridColumnEnd: `span ${leavePos.span}`,
                               }}
                             >
-                              <span className="truncate">🚫 Out of Office ({unavail.reason || 'Leave'})</span>
-                              <span className="text-[9px] font-mono shrink-0 ml-1.5 opacity-90">
-                                {leavePos.lStart} ➔ {leavePos.lEnd}
-                              </span>
+                              <span className="truncate">🚫 Out of Office</span>
+                              <span className="opacity-90">{formatShortDate(leavePos.lStart)} – {formatShortDate(leavePos.lEnd)}</span>
                             </div>
 
-                            {/* Restart Day Marker on Calendar Grid */}
                             {leavePos.restartCol !== -1 && (
                               <div
                                 style={{ gridColumnStart: leavePos.restartCol, gridColumnEnd: leavePos.restartCol + 1 }}
-                                className="h-6 rounded-lg px-1 flex items-center justify-center text-[9px] font-extrabold bg-emerald-600 text-white shadow-2xs animate-pulse"
-                                title={`Developer ${dev.name} restarts work on ${restartDate}`}
+                                className="h-5 rounded-md px-1 flex items-center justify-center text-[9px] font-bold bg-emerald-600 text-white shadow-2xs"
+                                title={`Work restarts on ${restartDate}`}
                               >
-                                <span>🔄 Resume</span>
+                                <span>🟢 Resume</span>
                               </div>
                             )}
                           </div>
                         </div>
                       )}
 
-                      {/* Developer's Assigned Tasks */}
+                      {/* Developer Tasks */}
                       {dev.tasks.length === 0 ? (
-                        <div className="flex items-center py-2.5 text-xs text-slate-400">
-                          <div className="w-96 min-w-[24rem] sticky left-0 z-20 bg-white border-r border-slate-100 px-4 py-1 text-[11px] italic">
-                            No tasks currently scheduled for {dev.name}.
+                        <div className="flex items-center py-2 text-xs text-slate-400">
+                          <div className="w-80 min-w-[20rem] sticky left-0 z-20 bg-white border-r border-slate-100 px-4 py-1 text-[11px] italic">
+                            No tasks scheduled.
                           </div>
                         </div>
                       ) : (
                         dev.tasks.map((task, tIdx) => {
                           const pos = getTaskGridPosition(task);
-                          const isUnavailable = Boolean(unavail);
-                          const barColor = getBarColor(task, isUnavailable);
-
-                          // Check if task directly overlaps leave window
                           const isDirectLeaveOverlap =
                             unavail &&
                             pos.tStart &&
@@ -953,22 +790,32 @@ export const GanttTimelineView = ({
                             pos.tStart <= unavail.toDate &&
                             pos.tDue >= unavail.fromDate;
 
+                          const barColor = getBarColor(task, Boolean(unavail), isDirectLeaveOverlap);
+
+                          // Check dependency status
+                          const parentTask = task.dependency ? taskMap.get(task.dependency) : null;
+                          const isDependencyDelayed =
+                            parentTask &&
+                            parentTask.dueDate &&
+                            pos.tStart &&
+                            parseDateToIsoDay(parentTask.dueDate) > pos.tStart;
+
                           return (
                             <div
                               key={task.id || task._id || tIdx}
-                              className={`flex items-center hover:bg-slate-50/80 transition group text-xs min-h-[58px] ${
-                                isDirectLeaveOverlap ? 'bg-rose-50/30' : ''
+                              className={`flex items-center hover:bg-slate-50/70 transition group text-xs min-h-[48px] ${
+                                isDirectLeaveOverlap ? 'bg-rose-50/20' : ''
                               }`}
                             >
-                              {/* Sticky Task Metadata Column (Showing explicit Start & Due Dates) */}
+                              {/* Sticky Task Metadata Column (Clean, Compact, No Clutter) */}
                               <div
-                                className={`w-96 min-w-[24rem] sticky left-0 z-20 bg-white group-hover:bg-slate-50 border-r border-slate-100 px-4 py-2 min-w-0 transition shadow-2xs ${
-                                  isDirectLeaveOverlap ? 'bg-rose-50/40' : ''
+                                className={`w-80 min-w-[20rem] sticky left-0 z-20 bg-white group-hover:bg-slate-50 border-r border-slate-100 px-4 py-1.5 min-w-0 transition shadow-2xs ${
+                                  isDirectLeaveOverlap ? 'bg-rose-50/30' : ''
                                 }`}
                               >
                                 <div className="flex items-center justify-between gap-1">
                                   <div className="flex items-center gap-1.5 truncate">
-                                    <span className="font-mono text-[11px] font-bold text-slate-500 shrink-0">
+                                    <span className="font-mono text-[10px] font-bold text-slate-400 shrink-0">
                                       {task.taskId || task.id}
                                     </span>
                                     <span
@@ -978,44 +825,49 @@ export const GanttTimelineView = ({
                                       {task.title}
                                     </span>
                                   </div>
-
-                                  <span className="text-[10px] font-semibold text-slate-400 font-mono shrink-0">
+                                  <span className="text-[10px] font-mono text-slate-400 shrink-0">
                                     {task.effortHours}h
                                   </span>
                                 </div>
 
-                                {/* Explicit START DATE and END DATE Chips */}
-                                <div className="flex items-center flex-wrap gap-2 text-[10px] mt-1.5">
-                                  <div className="flex items-center gap-1 bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-mono">
-                                    <span className="text-emerald-700 font-bold">START:</span>
-                                    <strong>{pos.tStart}</strong>
-                                  </div>
-
-                                  <div className="flex items-center gap-1 bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-mono">
-                                    <span className="text-blue-700 font-bold">END:</span>
-                                    <strong>{pos.tDue}</strong>
-                                  </div>
-
+                                {/* Clean subline: Duration + Dependency link */}
+                                <div className="flex items-center gap-2 text-[10px] text-slate-400 mt-0.5">
+                                  <span>{pos.durationDays}d span</span>
+                                  {task.dependency && (
+                                    <>
+                                      <span>•</span>
+                                      <span
+                                        className={`font-medium ${
+                                          isDependencyDelayed ? 'text-rose-600 font-bold' : 'text-blue-600'
+                                        }`}
+                                        title={
+                                          isDependencyDelayed
+                                            ? `Predecessor finishes after this task starts!`
+                                            : `Depends on ${task.dependency}`
+                                        }
+                                      >
+                                        ↳ Waits for {task.dependency}
+                                      </span>
+                                    </>
+                                  )}
                                   {isDirectLeaveOverlap && (
-                                    <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-rose-600 text-white animate-pulse">
-                                      ⚠️ OVERLAPS LEAVE!
+                                    <span className="text-rose-700 font-bold ml-auto">
+                                      ⚠️ Overlaps Leave
                                     </span>
                                   )}
                                 </div>
                               </div>
 
-                              {/* Timeline Grid Cell with In-Grid Vertical Lines & Task Bar */}
+                              {/* Calendar Grid Cell with In-Grid Vertical Marker Lines & Task Bar */}
                               <div
-                                className="grid relative items-center py-2 px-1 h-full"
+                                className="grid relative items-center py-1.5 px-1 h-full"
                                 style={{ gridTemplateColumns: `repeat(${days.length}, 48px)` }}
                               >
                                 {/* In-Grid Today Column Marker */}
                                 {todayIndex !== -1 && (
                                   <div
                                     className="absolute inset-y-0 pointer-events-none z-10 border-r-2 border-dashed border-blue-400/80"
-                                    style={{
-                                      left: `${todayIndex * 48 + 24}px`,
-                                    }}
+                                    style={{ left: `${todayIndex * 48 + 24}px` }}
                                   ></div>
                                 )}
 
@@ -1023,21 +875,18 @@ export const GanttTimelineView = ({
                                 {deadlineIndex !== -1 && (
                                   <div
                                     className="absolute inset-y-0 pointer-events-none z-10 border-r-2 border-red-500 shadow-xs"
-                                    style={{
-                                      left: `${deadlineIndex * 48 + 24}px`,
-                                    }}
+                                    style={{ left: `${deadlineIndex * 48 + 24}px` }}
                                   ></div>
                                 )}
 
-                                {/* Out of Range Notice (if past or future) */}
+                                {/* Task Bar */}
                                 {pos.outOfRange === 'past' ? (
                                   <div
                                     style={{ gridColumnStart: 1, gridColumnEnd: 3 }}
                                     onClick={() => setSelectedTask(task)}
                                     className="h-7 rounded-lg px-2 flex items-center gap-1 text-[10px] font-medium bg-slate-100 text-slate-500 border border-slate-200 cursor-pointer"
                                   >
-                                    <span>◀</span>
-                                    <span className="truncate">Finished ({pos.tDue})</span>
+                                    <span>◀ Finished ({formatShortDate(pos.tDue)})</span>
                                   </div>
                                 ) : pos.outOfRange === 'future' ? (
                                   <div
@@ -1045,33 +894,31 @@ export const GanttTimelineView = ({
                                     onClick={() => setSelectedTask(task)}
                                     className="h-7 rounded-lg px-2 flex items-center justify-end gap-1 text-[10px] font-medium bg-slate-100 text-slate-500 border border-slate-200 cursor-pointer"
                                   >
-                                    <span className="truncate">Starts {pos.tStart}</span>
-                                    <span>▶</span>
+                                    <span>Starts {formatShortDate(pos.tStart)} ▶</span>
                                   </div>
                                 ) : (
-                                  /* Standard Gantt Bar with explicit Start and End dates */
                                   <div
                                     onClick={() => setSelectedTask(task)}
-                                    className={`h-8 rounded-xl px-2.5 flex items-center justify-between text-xs font-medium cursor-pointer shadow-2xs transition transform hover:scale-[1.01] ${barColor}`}
+                                    className={`h-7 rounded-lg px-2 flex items-center justify-between text-xs font-medium cursor-pointer shadow-2xs transition transform hover:scale-[1.01] ${barColor}`}
                                     style={{
                                       gridColumnStart: pos.startCol,
                                       gridColumnEnd: `span ${pos.span}`,
                                     }}
                                   >
-                                    <div className="truncate font-semibold text-[11px] flex items-center gap-1.5">
-                                      {pos.clippedLeft && <span className="text-[10px] opacity-80">◀</span>}
+                                    <div className="truncate font-semibold text-[11px] flex items-center gap-1">
+                                      {pos.clippedLeft && <span className="opacity-80 text-[9px]">◀</span>}
                                       {isDirectLeaveOverlap && <span>⚠️</span>}
                                       <span className="truncate">{task.title}</span>
                                     </div>
 
-                                    <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                                      <span className="text-[9px] font-mono opacity-90 hidden sm:inline bg-black/20 px-1.5 py-0.5 rounded">
-                                        {formatShortDate(pos.tStart)} ➔ {formatShortDate(pos.tDue)}
+                                    <div className="flex items-center gap-1.5 shrink-0 ml-1.5">
+                                      <span className="text-[9px] font-mono opacity-85 hidden sm:inline">
+                                        {formatShortDate(pos.tStart)}–{formatShortDate(pos.tDue)}
                                       </span>
-                                      <span className="text-[10px] opacity-90 font-bold bg-black/20 px-1.5 py-0.5 rounded">
-                                        {isDirectLeaveOverlap ? 'CONFLICT' : `${task.progress || 0}%`}
+                                      <span className="text-[9px] opacity-90 font-bold bg-black/20 px-1 py-0.2 rounded">
+                                        {task.progress || 0}%
                                       </span>
-                                      {pos.clippedRight && <span className="text-[10px] opacity-80">▶</span>}
+                                      {pos.clippedRight && <span className="opacity-80 text-[9px]">▶</span>}
                                     </div>
                                   </div>
                                 )}
@@ -1085,70 +932,55 @@ export const GanttTimelineView = ({
                 })
               )
             ) : (
-              /* ─── MODE B: FLAT TASK LIST ─── */
+              /* ─── ALL TASKS LIST (FLAT VIEW) ─── */
               filteredTasks.length === 0 ? (
-                <div className="p-12 text-center text-slate-400 text-xs">
-                  No tasks match the selected filter.
-                </div>
+                <div className="p-12 text-center text-slate-400 text-xs">No tasks match filter.</div>
               ) : (
                 filteredTasks.map((task, idx) => {
                   const pos = getTaskGridPosition(task);
                   const isUnavailable = checkIsAssigneeUnavailable(task);
-                  const barColor = getBarColor(task, isUnavailable);
+                  const barColor = getBarColor(task, isUnavailable, false);
                   const assigneeName = task.assigneeName || task.assignee || 'Unassigned';
-                  const unavail = getUnavailabilityInfo(task);
-                  const restartDate = unavail ? getWorkRestartDate(unavail.toDate) : null;
 
                   return (
                     <div
                       key={task.id || task._id || idx}
-                      className={`flex items-center hover:bg-slate-50/80 transition group text-xs min-h-[58px] ${
+                      className={`flex items-center hover:bg-slate-50/70 transition group text-xs min-h-[48px] ${
                         isUnavailable ? 'bg-rose-50/20' : ''
                       }`}
                     >
                       {/* Sticky Task Metadata Column */}
-                      <div
-                        className={`w-96 min-w-[24rem] sticky left-0 z-20 bg-white group-hover:bg-slate-50 border-r border-slate-100 px-4 py-2 min-w-0 transition shadow-2xs ${
-                          isUnavailable ? 'bg-rose-50/30' : ''
-                        }`}
-                      >
+                      <div className="w-80 min-w-[20rem] sticky left-0 z-20 bg-white group-hover:bg-slate-50 border-r border-slate-100 px-4 py-1.5 min-w-0 transition shadow-2xs">
                         <div className="flex items-center justify-between gap-1">
                           <div className="flex items-center gap-1.5 truncate">
-                            <span className="font-mono text-[11px] font-bold text-slate-500 shrink-0">
+                            <span className="font-mono text-[10px] font-bold text-slate-400 shrink-0">
                               {task.taskId || task.id}
                             </span>
-                            <span
-                              className="font-semibold text-slate-800 truncate"
-                              title={task.title}
-                            >
+                            <span className="font-semibold text-slate-800 truncate" title={task.title}>
                               {task.title}
                             </span>
                           </div>
                           <span className="text-[10px] font-mono text-slate-400">{task.effortHours}h</span>
                         </div>
 
-                        <div className="flex items-center flex-wrap gap-1.5 text-[10px] text-slate-500 mt-1">
-                          <span className={isUnavailable ? 'font-bold text-rose-700' : 'text-slate-700'}>
-                            👤 {assigneeName}
+                        <div className="flex items-center gap-2 text-[10px] text-slate-400 mt-0.5">
+                          <span className={isUnavailable ? 'text-rose-700 font-bold' : 'text-slate-600'}>
+                            {assigneeName}
                           </span>
                           <span>•</span>
-                          <span className="bg-slate-100 px-1.5 py-0.2 rounded font-mono">
-                            <strong className="text-emerald-700">Start:</strong> {pos.tStart}
-                          </span>
-                          <span className="bg-slate-100 px-1.5 py-0.2 rounded font-mono">
-                            <strong className="text-blue-700">End:</strong> {pos.tDue}
-                          </span>
-                          {isUnavailable && (
-                            <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-rose-100 text-rose-800 border border-rose-300">
-                              ON LEAVE (Restarts {restartDate})
-                            </span>
+                          <span>{pos.durationDays}d span</span>
+                          {task.dependency && (
+                            <>
+                              <span>•</span>
+                              <span className="text-blue-600">↳ Waits for {task.dependency}</span>
+                            </>
                           )}
                         </div>
                       </div>
 
                       {/* Timeline Grid Cell */}
                       <div
-                        className="grid relative items-center py-2 px-1 h-full"
+                        className="grid relative items-center py-1.5 px-1 h-full"
                         style={{ gridTemplateColumns: `repeat(${days.length}, 48px)` }}
                       >
                         {todayIndex !== -1 && (
@@ -1166,23 +998,23 @@ export const GanttTimelineView = ({
 
                         <div
                           onClick={() => setSelectedTask(task)}
-                          className={`h-8 rounded-xl px-2.5 flex items-center justify-between text-xs font-medium cursor-pointer shadow-2xs transition transform hover:scale-[1.01] ${barColor}`}
+                          className={`h-7 rounded-lg px-2 flex items-center justify-between text-xs font-medium cursor-pointer shadow-2xs transition transform hover:scale-[1.01] ${barColor}`}
                           style={{
                             gridColumnStart: pos.startCol,
                             gridColumnEnd: `span ${pos.span}`,
                           }}
                         >
-                          <div className="truncate font-semibold text-[11px] flex items-center gap-1.5">
+                          <div className="truncate font-semibold text-[11px] flex items-center gap-1">
                             {isUnavailable && <span>⚠️</span>}
                             <span className="truncate">{task.title}</span>
                           </div>
 
-                          <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                            <span className="text-[9px] font-mono opacity-80 hidden sm:inline">
-                              {formatShortDate(pos.tStart)} ➔ {formatShortDate(pos.tDue)}
+                          <div className="flex items-center gap-1.5 shrink-0 ml-1.5">
+                            <span className="text-[9px] font-mono opacity-85 hidden sm:inline">
+                              {formatShortDate(pos.tStart)}–{formatShortDate(pos.tDue)}
                             </span>
-                            <span className="text-[10px] opacity-90 font-bold bg-black/20 px-1.5 py-0.5 rounded">
-                              {isUnavailable ? 'LEAVE' : `${task.progress || 0}%`}
+                            <span className="text-[9px] opacity-90 font-bold bg-black/20 px-1 py-0.2 rounded">
+                              {task.progress || 0}%
                             </span>
                           </div>
                         </div>
@@ -1196,12 +1028,12 @@ export const GanttTimelineView = ({
         </div>
       </div>
 
-      {/* Task Details Drawer when a bar is clicked */}
+      {/* ─── TASK DETAILS DRAWER (CLEAR & INTERACTIVE) ─── */}
       {selectedTask && (
-        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 animate-in fade-in duration-150">
-          <div className="flex items-center justify-between mb-3">
+        <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-xs space-y-3 animate-in fade-in duration-150">
+          <div className="flex items-center justify-between pb-2 border-b border-slate-100">
             <div className="flex items-center gap-2">
-              <span className="font-mono font-bold text-blue-700 text-sm">
+              <span className="font-mono font-bold text-indigo-700 text-sm">
                 {selectedTask.taskId || selectedTask.id}
               </span>
               <h4 className="text-sm font-bold text-slate-900">{selectedTask.title}</h4>
@@ -1209,72 +1041,68 @@ export const GanttTimelineView = ({
             <button
               type="button"
               onClick={() => setSelectedTask(null)}
-              className="text-slate-400 hover:text-slate-600 cursor-pointer"
+              className="w-7 h-7 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center text-xs font-bold cursor-pointer"
             >
               ✕
             </button>
           </div>
 
-          {/* If Assignee is on leave, show prominent red callout */}
+          {/* Leave Conflict Warning */}
           {checkIsAssigneeUnavailable(selectedTask) && (
-            <div className="mb-4 p-3.5 rounded-xl bg-rose-100 border border-rose-300 text-rose-900 text-xs flex items-center justify-between">
+            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 text-xs flex items-center justify-between">
               <div>
-                <span className="font-bold block text-sm mb-0.5">
-                  🚨 Assigned developer ({selectedTask.assigneeName || selectedTask.assignee}) is currently ON LEAVE!
-                </span>
-                <span className="text-xs text-rose-800">
-                  Leave Interval:{' '}
-                  <strong>
-                    {getUnavailabilityInfo(selectedTask)?.fromDate} ➔ {getUnavailabilityInfo(selectedTask)?.toDate}
-                  </strong>{' '}
-                  ({getUnavailabilityInfo(selectedTask)?.reason || 'Absence'}).
-                  <br />
-                  <strong className="text-emerald-900 font-bold">
-                    🔄 Scheduled Work Restart Date:{' '}
-                    {getWorkRestartDate(getUnavailabilityInfo(selectedTask)?.toDate)}
+                <strong className="block">
+                  🚨 Assigned developer ({selectedTask.assigneeName || selectedTask.assignee}) is on leave!
+                </strong>
+                <span className="text-[11px] text-rose-700">
+                  Leave: {getUnavailabilityInfo(selectedTask)?.fromDate} ➔ {getUnavailabilityInfo(selectedTask)?.toDate}.{' '}
+                  <strong className="text-emerald-900">
+                    Restarts work on {getWorkRestartDate(getUnavailabilityInfo(selectedTask)?.toDate)}.
                   </strong>
                 </span>
               </div>
-              <span className="px-2.5 py-1 rounded bg-rose-600 text-white font-bold text-[10px] shrink-0">
-                Red Alert
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-600 text-white">
+                Disrupted
               </span>
             </div>
           )}
 
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 text-xs mb-4">
-            <div>
-              <span className="text-slate-500 block mb-0.5">Assignee:</span>
-              <strong className={checkIsAssigneeUnavailable(selectedTask) ? 'text-rose-700' : 'text-slate-800'}>
-                {selectedTask.assigneeName || selectedTask.assignee || 'Unassigned'}
-              </strong>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
+            <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+              <span className="text-slate-400 block text-[10px] uppercase font-bold">Assignee</span>
+              <strong className="text-slate-800">{selectedTask.assigneeName || selectedTask.assignee || 'Unassigned'}</strong>
             </div>
-            <div>
-              <span className="text-slate-500 block mb-0.5">Start Date:</span>
+
+            <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+              <span className="text-slate-400 block text-[10px] uppercase font-bold">Start Date</span>
               <strong className="text-emerald-700 font-mono font-bold">
                 {parseDateToIsoDay(selectedTask.startDate) || 'Auto-Scheduled'}
               </strong>
             </div>
-            <div>
-              <span className="text-slate-500 block mb-0.5">End / Due Date:</span>
+
+            <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+              <span className="text-slate-400 block text-[10px] uppercase font-bold">Due Date</span>
               <strong className="text-blue-700 font-mono font-bold">
-                {parseDateToIsoDay(selectedTask.dueDate) || 'Not set'}
+                {parseDateToIsoDay(selectedTask.dueDate) || 'Not Set'}
               </strong>
             </div>
-            <div>
-              <span className="text-slate-500 block mb-0.5">Effort:</span>
-              <strong className="text-slate-800">{selectedTask.effortHours} Hours</strong>
+
+            <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+              <span className="text-slate-400 block text-[10px] uppercase font-bold">Effort</span>
+              <strong className="text-slate-800">{selectedTask.effortHours || 8}h</strong>
             </div>
-            <div>
-              <span className="text-slate-500 block mb-0.5">Predecessors:</span>
+
+            <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+              <span className="text-slate-400 block text-[10px] uppercase font-bold">Dependency</span>
               <strong className="text-slate-800 font-mono">
-                {selectedTask.dependency ? `Task ${selectedTask.dependency}` : 'None'}
+                {selectedTask.dependency ? `Waits for ${selectedTask.dependency}` : 'None'}
               </strong>
             </div>
           </div>
 
           {selectedTask.description && (
-            <div className="mt-2 pt-2 border-t border-slate-200 text-xs text-slate-600">
-              <span className="font-semibold text-slate-700">Description: </span>
+            <div className="text-xs text-slate-600 bg-slate-50/70 p-3 rounded-xl border border-slate-100">
+              <strong className="text-slate-700 block mb-0.5">Description:</strong>
               {selectedTask.description}
             </div>
           )}
