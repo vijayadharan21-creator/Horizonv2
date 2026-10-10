@@ -2,6 +2,7 @@ import axios from 'axios';
 
 // Base API client with credentials enabled so HTTP-only cookies are passed automatically
 const api = axios.create({
+  baseURL: import.meta.env.VITE_API_URL || '',
   withCredentials: true,
   headers: {
     'Content-Type': 'application/json',

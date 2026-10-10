@@ -1,5 +1,10 @@
+# server/.dockerignore
 node_modules
 .env
 .env.*
 *.log
 .DS_Store
+tests
+scripts
+*.cmd
+README.md

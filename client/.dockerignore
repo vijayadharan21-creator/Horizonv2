@@ -1,6 +1,10 @@
+# client/.dockerignore
 node_modules
 dist
 .env
 .env.*
 *.log
 .DS_Store
+*.cmd
+README.md
+eslint.config.js

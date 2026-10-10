@@ -39,6 +39,21 @@ const userSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    subSkills: {
+      type: [String],
+      default: [],
+    },
+    availability: {
+      status: {
+        type: String,
+        enum: ['available', 'unavailable'],
+        default: 'available',
+      },
+      from: { type: String, default: null },
+      to: { type: String, default: null },
+      reason: { type: String, default: '' },
+      updatedAt: { type: Date, default: Date.now },
+    },
     refreshToken: {
       type: String,
       default: null,
@@ -69,6 +84,8 @@ userSchema.methods.toSafeObject = function () {
     email: this.email,
     role: this.role,
     skills: this.skills,
+    subSkills: this.subSkills || [],
+    availability: this.availability || { status: 'available', from: null, to: null, reason: '' },
     createdAt: this.createdAt,
   };
 };

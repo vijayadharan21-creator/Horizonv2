@@ -255,6 +255,7 @@ describe('Unit Tests: Auth Controller', () => {
       User.findById = () => ({
         select: async () => ({
           ...mockUser,
+          refreshToken: validRefreshToken,
           toSafeObject() {
             return mockUser;
           },
@@ -277,6 +278,39 @@ describe('Unit Tests: Auth Controller', () => {
 
       User.findById = originalFindById;
       User.findByIdAndUpdate = originalFindByIdAndUpdate;
+    });
+
+    it('should return 401 if refresh token does not match token in database (revoked)', async () => {
+      const mockUser = {
+        _id: '6614mockid1234567890abcdef',
+        name: 'Alex Rivera',
+        email: 'dev@taskforge.ai',
+        role: 'developer',
+      };
+      const { refreshToken: validRefreshToken } = generateTokens(mockUser);
+
+      // User in DB has null or different token (e.g. after logout)
+      User.findById = () => ({
+        select: async () => ({
+          ...mockUser,
+          refreshToken: null,
+          toSafeObject() {
+            return mockUser;
+          },
+        }),
+      });
+
+      const req = {
+        cookies: { refreshToken: validRefreshToken },
+      };
+      const res = createMockRes();
+
+      await refreshToken(req, res);
+
+      assert.equal(res.statusCode, 401);
+      assert.equal(res.body.code, 'REVOKED_REFRESH_TOKEN');
+
+      User.findById = originalFindById;
     });
   });
 

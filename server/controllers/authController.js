@@ -13,6 +13,7 @@ export const SEED_USERS = [
     password: 'Password@123',
     role: 'project_manager',
     skills: ['Project Planning', 'Resource Allocation', 'Sprint Planning'],
+    subSkills: ['Agile Architecture', 'Risk Assessment', 'Capacity Balancing', 'Scrum Roadmap'],
   },
   {
     name: 'Alex Rivera',
@@ -20,6 +21,7 @@ export const SEED_USERS = [
     password: 'Password@123',
     role: 'developer',
     skills: ['Node.js', 'React', 'MongoDB', 'Python'],
+    subSkills: ['React State Management', 'REST API Optimization', 'MongoDB Schema Modeling', 'Component Design', 'Express Middleware'],
   },
 ];
 
@@ -29,8 +31,8 @@ export const SEED_USERS = [
 export const seedDefaultUsers = async () => {
   try {
     for (const seed of SEED_USERS) {
-      const exists = await User.findOne({ email: seed.email });
-      if (!exists) {
+      const existing = await User.findOne({ email: seed.email });
+      if (!existing) {
         // Use User.create() which triggers pre-save hook for password hashing
         await User.create({
           name: seed.name,
@@ -38,9 +40,14 @@ export const seedDefaultUsers = async () => {
           password: seed.password,
           role: seed.role,
           skills: seed.skills,
+          subSkills: seed.subSkills,
         });
         console.log(`[TaskForge Seeder] Created: ${seed.email} (${seed.role})`);
       } else {
+        if (!existing.subSkills || existing.subSkills.length === 0) {
+          existing.subSkills = seed.subSkills;
+          await existing.save();
+        }
         console.log(`[TaskForge Seeder] Already exists: ${seed.email}`);
       }
     }
@@ -199,12 +206,12 @@ export const refreshToken = async (req, res) => {
 
     const user = await User.findById(decoded.id).select('+refreshToken');
 
-    if (!user) {
+    if (!user || !user.refreshToken || user.refreshToken !== incomingRefreshToken) {
       clearAuthCookies(res);
       return res.status(401).json({
         success: false,
-        message: 'User not found.',
-        code: 'USER_NOT_FOUND',
+        message: 'Session revoked or expired. Please log in again.',
+        code: 'REVOKED_REFRESH_TOKEN',
       });
     }
 

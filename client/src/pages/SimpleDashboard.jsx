@@ -15,8 +15,10 @@ export const SimpleDashboard = ({ expectedRole }) => {
   useEffect(() => {
     if (!user) {
       navigate('/login');
+    } else if (expectedRole && user.role !== expectedRole) {
+      navigate(user.role === 'project_manager' ? '/dashboard/pm' : '/dashboard/developer');
     }
-  }, [user, navigate]);
+  }, [user, expectedRole, navigate]);
 
   if (!user) return null;
 
@@ -111,7 +113,7 @@ export const SimpleDashboard = ({ expectedRole }) => {
             </div>
             <div className="inline-flex items-center gap-2 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-xl self-start sm:self-auto">
               <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-              Dual-Token Cookies Active
+              Enterprise Session Active
             </div>
           </div>
         </div>
@@ -135,7 +137,7 @@ export const SimpleDashboard = ({ expectedRole }) => {
                 </div>
                 <div className="flex justify-between py-1.5">
                   <span className="text-slate-500">Total Tasks:</span>
-                  <span className="font-medium text-slate-800">5 Tasks (DAG Mode)</span>
+                  <span className="font-medium text-slate-800">5 Active Tasks</span>
                 </div>
               </div>
             </div>
@@ -148,7 +150,7 @@ export const SimpleDashboard = ({ expectedRole }) => {
               <ul className="text-xs text-slate-600 space-y-2 list-disc list-inside">
                 <li>Create and configure projects & working calendars</li>
                 <li>Approve AI-suggested task proposals & dependencies</li>
-                <li>Trigger deterministic scheduling and replanning</li>
+                <li>Trigger automated schedule optimization and replanning</li>
               </ul>
             </div>
           </div>

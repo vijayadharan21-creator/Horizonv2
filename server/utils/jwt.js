@@ -71,18 +71,20 @@ export const verifyRefreshToken = (token) => {
  * causing all protected routes to fail with 401/500.
  * Use sameSite:'lax' + secure:false when running without HTTPS.
  */
+const isCookieSecure = process.env.COOKIE_SECURE === 'true';
+
 export const accessTokenCookieOptions = {
   httpOnly: true,
-  secure: false,       // Set to true only when HTTPS is configured
-  sameSite: 'lax',     // 'lax' works on HTTP; use 'none' only with HTTPS
+  secure: isCookieSecure,
+  sameSite: isCookieSecure ? 'none' : 'lax',
   maxAge: 15 * 60 * 1000, // 15 minutes
   path: '/',
 };
 
 export const refreshTokenCookieOptions = {
   httpOnly: true,
-  secure: false,       // Set to true only when HTTPS is configured
-  sameSite: 'lax',
+  secure: isCookieSecure,
+  sameSite: isCookieSecure ? 'none' : 'lax',
   maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   path: '/',
 };

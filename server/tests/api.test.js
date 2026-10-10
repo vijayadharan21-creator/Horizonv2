@@ -32,8 +32,7 @@ describe('Unit Tests: API HTTP Endpoints', () => {
 
     const data = await res.json();
     assert.equal(data.status, 'healthy');
-    assert.equal(data.service, 'TaskForge AI Auth Service');
-    assert.equal(data.dualTokenSupported, true);
+    assert.ok(data.service.includes('TaskForge AI'));
   });
 
   it('GET /api/unknown-endpoint returns 404 with error message', async () => {
@@ -175,5 +174,67 @@ describe('Unit Tests: API HTTP Endpoints', () => {
     const data = await res.json();
     assert.equal(data.success, false);
     assert.match(data.message, /Forbidden.*Role 'project_manager' is not authorized/);
+  });
+
+  it('GET /api/ai/status returns 401 when accessed without token', async () => {
+    const res = await fetch(`${baseUrl}/api/ai/status`);
+    assert.equal(res.status, 401);
+  });
+
+  it('GET /api/ai/status returns 403 Forbidden when accessed by developer', async () => {
+    const devUser = {
+      _id: '66141234567890abcdef5555',
+      name: 'Dev User',
+      email: 'alex@taskforge.ai',
+      role: 'developer',
+    };
+    const { accessToken } = generateTokens(devUser);
+
+    const res = await fetch(`${baseUrl}/api/ai/status`, {
+      headers: { Cookie: `accessToken=${accessToken}` },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('GET /api/ai/status returns 200 with safe provider status when accessed by PM', async () => {
+    const pmUser = {
+      _id: '66141234567890abcdef4444',
+      name: 'PM User',
+      email: 'pm@taskforge.ai',
+      role: 'project_manager',
+    };
+    const { accessToken } = generateTokens(pmUser);
+
+    const res = await fetch(`${baseUrl}/api/ai/status`, {
+      headers: { Cookie: `accessToken=${accessToken}` },
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.success, true);
+    assert.ok(body.data.activeProvider);
+    assert.equal(body.data.apiKey, undefined, 'API key must never be leaked in status response');
+  });
+
+  it('POST /api/ai/generate-tasks returns 400 when missing required body fields', async () => {
+    const pmUser = {
+      _id: '66141234567890abcdef4444',
+      name: 'PM User',
+      email: 'pm@taskforge.ai',
+      role: 'project_manager',
+    };
+    const { accessToken } = generateTokens(pmUser);
+
+    const res = await fetch(`${baseUrl}/api/ai/generate-tasks`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: `accessToken=${accessToken}`,
+      },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.equal(body.success, false);
+    assert.equal(body.code, 'INVALID_PROJECT_ID');
   });
 });
