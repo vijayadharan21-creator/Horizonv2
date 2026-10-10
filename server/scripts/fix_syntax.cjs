@@ -1,0 +1,10 @@
+const fs = require('fs');
+const path = require('path');
+const filePath = path.join(__dirname, 'service', 'ai', 'task-generation.service.js');
+let content = fs.readFileSync(filePath, 'utf8');
+// Fix the double-backtick syntax: .`;`; -> .`;
+const before = content.includes('Unassigned\".`;\`;');
+content = content.replace('Unassigned\".`;\`;', 'Unassigned\".`;');
+const after = content.includes('Unassigned\".`;\`;');
+fs.writeFileSync(filePath, content, 'utf8');
+console.log('Done. Had error:', before, '| Still has:', after);

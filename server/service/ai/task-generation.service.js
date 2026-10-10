@@ -275,7 +275,7 @@ Follow these critical software engineering principles:
    - Calculate critical path in days.
    - Add a 20-30% safe buffer (in days) to absorb risk.
    - Compute recommended deadline (assume project starts today: ${todayStr}).
-5. Match each module to the BEST available developer based on their "primarySkills" AND "subSkills" from the provided team list. Choose the developer whose skills best match the module's suggestedSkills. If none match at all, use "Unassigned".`;`;
+5. Match each module to the BEST available developer based on their "primarySkills" AND "subSkills" from the provided team list. Choose the developer whose skills best match the module's suggestedSkills. If none match at all, use "Unassigned".`;
 
     const userPrompt = `SRS Document Source: ${fileName || 'Uploaded SRS Document'}
 Content:

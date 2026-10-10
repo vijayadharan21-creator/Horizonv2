@@ -57,16 +57,18 @@ export const CreateProjectSrsModal = ({
   onClose,
   onProjectCreated,
 }) => {
-  const [step, setStep] = useState('input'); // 'input' | 'template_review'
+  const [step, setStep] = useState('team'); // 'team' | 'input' | 'template_review'
   const [srsText, setSrsText] = useState('');
   const [fileName, setFileName] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState(null);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
-  const [analyzeStage, setAnalyzeStage] = useState(0); // for animated progress
+  const [analyzeStage, setAnalyzeStage] = useState(0);
 
-  // Available developers for assignment dropdowns
+  // Step 0: Team selection
   const [developers, setDevelopers] = useState([]);
+  const [loadingDevs, setLoadingDevs] = useState(false);
+  const [selectedTeam, setSelectedTeam] = useState([]); // array of developer ids
 
   // Step 2: AI Template State (Editable by Project Manager)
   const [projectName, setProjectName] = useState('');
@@ -84,15 +86,19 @@ export const CreateProjectSrsModal = ({
   useEffect(() => {
     if (isOpen) {
       loadDevelopers();
-    } else {
-      // Reset state on close
-      setStep('input');
+      setStep('team');
+      setSelectedTeam([]);
+      setSrsText('');
+      setFileName('');
       setAnalyzeError(null);
       setSaveError(null);
+      setModules([]);
+      setMetaInfo(null);
     }
   }, [isOpen]);
 
   const loadDevelopers = async () => {
+    setLoadingDevs(true);
     try {
       const res = await usersApi.getDevelopers();
       if (res.success && res.developers) {
@@ -100,7 +106,15 @@ export const CreateProjectSrsModal = ({
       }
     } catch {
       setDevelopers([]);
+    } finally {
+      setLoadingDevs(false);
     }
+  };
+
+  const toggleDeveloper = (devId) => {
+    setSelectedTeam(prev =>
+      prev.includes(devId) ? prev.filter(id => id !== devId) : [...prev, devId]
+    );
   };
 
   if (!isOpen) return null;
@@ -146,6 +160,10 @@ export const CreateProjectSrsModal = ({
   ];
 
   const handleAnalyzeSrs = async () => {
+    if (selectedTeam.length === 0) {
+      setAnalyzeError('Please select at least one team member before analyzing. The AI needs your team to allocate tasks correctly.');
+      return;
+    }
     if (!srsText.trim()) {
       setAnalyzeError('Please upload an SRS document or paste requirements text.');
       return;
@@ -164,6 +182,7 @@ export const CreateProjectSrsModal = ({
       const res = await aiApi.analyzeSrs({
         srsText: srsText.trim(),
         fileName: fileName || 'Uploaded SRS Document',
+        teamMemberIds: selectedTeam,   // ← only these developers will be considered
       });
 
       clearInterval(stageInterval);
