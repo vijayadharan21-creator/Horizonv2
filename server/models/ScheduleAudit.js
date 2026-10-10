@@ -12,6 +12,22 @@ const scheduleAuditSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+    previousScheduleVersion: {
+      type: Number,
+      default: null,
+    },
+    triggerType: {
+      type: String,
+      default: 'WORKER_UNAVAILABILITY',
+    },
+    strategy: {
+      type: String,
+      default: 'MIN_DISRUPTIONS',
+    },
+    candidateId: {
+      type: String,
+      default: 'CAND_OPTIMAL',
+    },
     eventId: {
       type: String,
       default: null,
@@ -24,11 +40,13 @@ const scheduleAuditSchema = new mongoose.Schema(
     actionsApplied: [
       {
         taskId: String,
+        taskTitle: String,
         actionType: String,
         previousAssignee: String,
         newAssignee: String,
         previousDueDate: String,
         newDueDate: String,
+        priorityAdjustment: String,
         reason: String,
       },
     ],
@@ -42,6 +60,10 @@ const scheduleAuditSchema = new mongoose.Schema(
       components: { type: mongoose.Schema.Types.Mixed, default: {} },
     },
     explanation: {
+      type: String,
+      default: '',
+    },
+    notes: {
       type: String,
       default: '',
     },

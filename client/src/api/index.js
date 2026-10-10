@@ -207,12 +207,19 @@ export const aiApi = {
   },
 
   /** Feature 4: Apply approved recovery plan modifications to MongoDB (PM only) */
-  applyRecoveryPlan: async (projectId, actions, unavailableInfo = null, expectedVersion = null) => {
+  applyRecoveryPlan: async (
+    projectId,
+    actions,
+    unavailableInfo = null,
+    expectedVersion = null,
+    extraMeta = {}
+  ) => {
     const response = await api.post('/api/ai/apply-recovery-plan', {
       projectId,
       actions,
       unavailableInfo,
       expectedVersion,
+      ...extraMeta,
     });
     return response.data;
   },

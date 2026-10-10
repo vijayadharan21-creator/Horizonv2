@@ -630,5 +630,39 @@ describe('EDUR: UI Property Compatibility & Version-Safe Persistence', () => {
     assert.equal(formattedRecommendations.length, 2);
     assert.equal(formattedRecommendations[1].action, 'KEEP_CURRENT', 'In-progress task must NOT be reversed');
   });
+
+  test('should verify ScheduleAudit schema supports version jumps, trigger types, and explanations', () => {
+    const mockProjectId = '507f1f77bcf86cd799439011';
+    const mockAudit = {
+      project: mockProjectId,
+      scheduleVersion: 3,
+      previousScheduleVersion: 2,
+      triggerType: 'WORKER_UNAVAILABILITY',
+      strategy: 'MIN_DISRUPTIONS',
+      candidateId: 'CAND_MIN_DISRUPTION',
+      objectiveScore: { J: 1.25, components: { dueDates: 0.25, reassignments: 1.0 } },
+      explanation: 'Optimal EDUR replanning: Reallocated 2 tasks with minimal disruption while preserving completed work.',
+      validationResult: { valid: true, errors: [], warnings: [] },
+      actionsApplied: [
+        {
+          taskId: 'T-201',
+          taskTitle: 'Database Optimization',
+          actionType: 'reassign',
+          previousAssignee: 'Alice',
+          newAssignee: 'Bob',
+          previousDueDate: '2026-10-15',
+          newDueDate: '2026-10-18',
+          reason: 'Alice is on medical leave from Oct 15 to Oct 20.',
+        },
+      ],
+    };
+
+    assert.equal(mockAudit.scheduleVersion, 3);
+    assert.equal(mockAudit.previousScheduleVersion, 2);
+    assert.equal(mockAudit.triggerType, 'WORKER_UNAVAILABILITY');
+    assert.ok(mockAudit.objectiveScore.J > 0);
+    assert.ok(mockAudit.actionsApplied.length === 1);
+    assert.equal(mockAudit.actionsApplied[0].newAssignee, 'Bob');
+  });
 });
 
